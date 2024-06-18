@@ -18,7 +18,7 @@ import {
 import type { ProviderAuthenticationSession } from './models';
 import { isSupportedCloudIntegrationId } from './models';
 
-interface StoredSession {
+export interface StoredSession {
 	id: string;
 	accessToken: string;
 	account?: {
@@ -456,10 +456,18 @@ export class IntegrationAuthenticationService implements Disposable {
 					).GitHubEnterpriseAuthenticationProvider(this.container);
 					break;
 				case HostingIntegrationId.GitLab:
+					provider = isSupportedCloudIntegrationId(HostingIntegrationId.GitLab)
+						? new (
+								await import(/* webpackChunkName: "integrations" */ './gitlab')
+						  ).GitLabAuthenticationProvider(this.container)
+						: new (
+								await import(/* webpackChunkName: "integrations" */ './gitlab')
+						  ).LocalGitLabAuthenticationProvider(this.container);
+					break;
 				case SelfHostedIntegrationId.GitLabSelfHosted:
 					provider = new (
 						await import(/* webpackChunkName: "integrations" */ './gitlab')
-					).GitLabAuthenticationProvider(this.container, providerId);
+					).GitLabSelfHostedAuthenticationProvider(this.container);
 					break;
 				case IssueIntegrationId.Jira:
 					provider = new (
