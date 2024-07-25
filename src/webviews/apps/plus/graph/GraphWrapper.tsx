@@ -1279,15 +1279,26 @@ export function GraphWrapper({
 											slot="checked-icon"
 											icon={branchVisibility === 'branch-current' ? 'check' : 'blank'}
 										></CodeIcon>
-										{graphConfig?.useSmartBranchFiltering ? 'Smart Branches' : 'Current Branch'}
-										<GlTooltip placement="right" slot="suffix">
-											<CodeIcon icon="info"></CodeIcon>
-											<span slot="content">
-												{graphConfig?.useSmartBranchFiltering
-													? 'Shows relevant branches only'
-													: 'Shows current branch only'}
-											</span>
-										</GlTooltip>
+										{graphConfig?.useSmartBranchFiltering ? (
+											<>
+												Smart Branches
+												<GlTooltip placement="right" slot="suffix">
+													<CodeIcon icon="info"></CodeIcon>
+													<span slot="content">
+														Shows only relevant branches
+														<br />
+														<br />
+														<i>
+															Includes the current branch, the current branch's upstream
+															(if any), and either the base branch or if current branch is
+															associated with a PR then the PR's target branch
+														</i>
+													</span>
+												</GlTooltip>
+											</>
+										) : (
+											'Current Branch'
+										)}
 									</SlOption>
 								</SlSelect>
 							</GlTooltip>
