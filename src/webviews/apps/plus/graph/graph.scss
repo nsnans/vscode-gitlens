@@ -1214,11 +1214,24 @@ hr {
 	font-family: var(--vscode-editor-font-family);
 }
 
+sl-option::part(base) {
+	padding: 0.2rem 0.4rem;
+}
+
 sl-option[aria-selected='true']::part(base),
 sl-option:not([aria-selected='true']):hover::part(base),
 sl-option:not([aria-selected='true']):focus::part(base) {
 	background-color: var(--vscode-list-activeSelectionBackground);
 	color: var(--vscode-list-activeSelectionForeground);
+}
+
+sl-option::part(checked-icon) {
+	display: none;
+}
+
+sl-select::part(listbox) {
+	padding-block: 0.2rem 0;
+	width: max-content;
 }
 
 sl-select::part(combobox) {

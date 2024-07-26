@@ -1302,6 +1302,9 @@ export function GraphWrapper({
 									</SlOption>
 								</SlSelect>
 							</GlTooltip>
+							<span>
+								<span className="action-divider"></span>
+							</span>
 							<GlTooltip placement="top">
 								<PopMenu>
 									<button type="button" className="action-button" slot="trigger">
