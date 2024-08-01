@@ -170,12 +170,6 @@ export abstract class LocalIntegrationAuthenticationProvider<
 export abstract class CloudIntegrationAuthenticationProvider<
 	ID extends IntegrationId = IntegrationId,
 > extends IntegrationAuthenticationProviderBase<ID> {
-	protected async getBuiltInExistingSession(
-		_?: IntegrationAuthenticationSessionDescriptor,
-	): Promise<ProviderAuthenticationSession | undefined> {
-		return Promise.resolve(undefined);
-	}
-
 	private getCloudSecretKey(id: string): `gitlens.integration.auth.cloud:${IntegrationId}|${string}` {
 		return `gitlens.integration.auth.cloud:${this.authProviderId}|${id}`;
 	}
@@ -234,18 +228,6 @@ export abstract class CloudIntegrationAuthenticationProvider<
 		}
 
 		return undefined;
-	}
-
-	public override async getSession(
-		descriptor?: IntegrationAuthenticationSessionDescriptor,
-		options?: { createIfNeeded?: boolean; forceNewSession?: boolean },
-	): Promise<ProviderAuthenticationSession | undefined> {
-		// by default getBuiltInExistingSession returns undefined
-		// but specific providers can override it to return a session (e.g. GitHub)
-		const existingSession = await this.getBuiltInExistingSession(descriptor);
-		if (existingSession != null) return existingSession;
-
-		return super.getSession(descriptor, options);
 	}
 
 	protected override async createSession(
