@@ -1,11 +1,16 @@
 import type { Subscription } from '../../plus/gk/account/subscription';
 import type { OnboardingItem } from '../apps/home/model/gitlens-onboarding';
 import type { IpcScope, WebviewState } from '../protocol';
-import { IpcCommand, IpcNotification } from '../protocol';
+import { IpcNotification } from '../protocol';
 
 export const scope: IpcScope = 'home';
 
 export type OnboardingState = Partial<Record<`${OnboardingItem}Checked`, boolean>>;
+
+export interface OnboardingConfigurationExtras {
+	editorPreviewEnabled: boolean;
+	repoHostConnected: boolean;
+}
 
 export interface State extends WebviewState {
 	repositories: DidChangeRepositoriesParams;
@@ -16,16 +21,8 @@ export interface State extends WebviewState {
 		drafts: boolean;
 	};
 	onboardingState: OnboardingState;
-	walkthroughCollapsed: boolean;
+	onboardingExtras: OnboardingConfigurationExtras;
 }
-
-// COMMANDS
-
-export interface CollapseSectionParams {
-	section: string;
-	collapsed: boolean;
-}
-export const CollapseSectionCommand = new IpcCommand<CollapseSectionParams>(scope, 'section/collapse');
 
 // NOTIFICATIONS
 
@@ -39,6 +36,12 @@ export const DidChangeRepositories = new IpcNotification<DidChangeRepositoriesPa
 
 export type DidChangeUsagesParams = OnboardingState;
 export const DidChangeUsage = new IpcNotification<DidChangeUsagesParams>(scope, 'onboarding/usage/didChange');
+
+export type DidChangeOnboardingConfigurationParams = OnboardingConfigurationExtras;
+export const DidChangeOnboardingConfiguration = new IpcNotification<DidChangeOnboardingConfigurationParams>(
+	scope,
+	'onboarding/configuration/didChange',
+);
 
 export interface DidChangeSubscriptionParams {
 	promoStates: Record<string, boolean>;
