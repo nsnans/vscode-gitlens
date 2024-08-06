@@ -286,9 +286,12 @@ export abstract class CloudIntegrationAuthenticationProvider<
 		descriptor?: IntegrationAuthenticationSessionDescriptor,
 		options?: { createIfNeeded?: boolean; forceNewSession?: boolean; source?: Sources },
 	) {
-		const session = await this.fetchSession(descriptor);
+		let session = await this.fetchSession(descriptor);
 		if (this.isNotNewAsForced(oldSession, session, options)) {
 			void this.manageCloudIntegrations(false, options?.source);
+		} else if (this.isNotCreatedAsNeeded(session, options)) {
+			await this.manageCloudIntegrations(true, options?.source);
+			session = await this.fetchSession(descriptor);
 		}
 		return session;
 	}
@@ -305,6 +308,13 @@ export abstract class CloudIntegrationAuthenticationProvider<
 			curSession != null &&
 			oldSession.accessToken === curSession.accessToken
 		);
+	}
+
+	private isNotCreatedAsNeeded(
+		curSession: ProviderAuthenticationSession | undefined,
+		options?: { createIfNeeded?: boolean; forceNewSession?: boolean },
+	) {
+		return isSupportedCloudIntegrationId(this.authProviderId) && options?.createIfNeeded && curSession == null;
 	}
 
 	private async manageCloudIntegrations(skipIfConnected: boolean, source: Sources | undefined): Promise<void> {
