@@ -31,7 +31,7 @@ export interface FileChangeListItemDetail extends File {
 	showOptions?: TextDocumentShowOptions;
 }
 
-export class GlDetailsBase extends LitElement {
+export abstract class GlDetailsBase extends LitElement {
 	readonly tab: 'wip' | 'commit' = 'commit';
 
 	@property({ type: Array })
@@ -316,9 +316,7 @@ export class GlDetailsBase extends LitElement {
 		return [];
 	}
 
-	protected getFileActions(_file: File, _options?: Partial<TreeItemBase>): TreeItemAction[] {
-		return [];
-	}
+	abstract getFileActions(_file: File, _options?: Partial<TreeItemBase>): TreeItemAction[];
 
 	protected fileToTreeModel(
 		file: File,
