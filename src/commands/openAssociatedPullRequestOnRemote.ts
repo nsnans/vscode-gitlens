@@ -3,18 +3,19 @@ import { GlCommand } from '../constants.commands';
 import type { Container } from '../container';
 import { GitUri } from '../git/gitUri';
 import { getRepositoryOrShowPicker } from '../quickpicks/repositoryPicker';
+import { command, executeCommand } from '../system/-webview/command';
 import { Logger } from '../system/logger';
-import { command, executeCommand } from '../system/vscode/command';
-import { ActiveEditorCommand, getCommandUri } from './base';
+import { ActiveEditorCommand } from './commandBase';
+import { getCommandUri } from './commandBase.utils';
 import type { OpenPullRequestOnRemoteCommandArgs } from './openPullRequestOnRemote';
 
 @command()
 export class OpenAssociatedPullRequestOnRemoteCommand extends ActiveEditorCommand {
 	constructor(private readonly container: Container) {
-		super(GlCommand.OpenAssociatedPullRequestOnRemote);
+		super('gitlens.openAssociatedPullRequestOnRemote');
 	}
 
-	async execute(editor?: TextEditor, uri?: Uri) {
+	async execute(editor?: TextEditor, uri?: Uri): Promise<void> {
 		uri = getCommandUri(uri, editor);
 
 		const gitUri = uri != null ? await GitUri.fromUri(uri) : undefined;

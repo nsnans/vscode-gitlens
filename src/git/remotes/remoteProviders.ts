@@ -2,8 +2,9 @@ import type { RemotesConfig } from '../../config';
 import { SelfHostedIntegrationId } from '../../constants.integrations';
 import type { Container } from '../../container';
 import type { ConfiguredIntegrationDescriptor } from '../../plus/integrations/authentication/models';
+import { isCloudSelfHostedIntegrationId } from '../../plus/integrations/providers/models';
+import { configuration } from '../../system/-webview/configuration';
 import { Logger } from '../../system/logger';
-import { configuration } from '../../system/vscode/configuration';
 import { AzureDevOpsRemote } from './azure-devops';
 import { BitbucketRemote } from './bitbucket';
 import { BitbucketServerRemote } from './bitbucket-server';
@@ -104,10 +105,12 @@ export function loadRemoteProviders(
 
 	if (configuredIntegrations?.length) {
 		for (const ci of configuredIntegrations) {
-			if (ci.integrationId === SelfHostedIntegrationId.CloudGitHubEnterprise && ci.domain) {
+			if (isCloudSelfHostedIntegrationId(ci.integrationId) && ci.domain) {
 				const matcher = ci.domain.toLocaleLowerCase();
 				const providerCreator = (_container: Container, domain: string, path: string) =>
-					new GitHubRemote(domain, path);
+					ci.integrationId === SelfHostedIntegrationId.CloudGitHubEnterprise
+						? new GitHubRemote(domain, path)
+						: new GitLabRemote(domain, path);
 				const provider = {
 					custom: false,
 					matcher: matcher,
@@ -164,14 +167,14 @@ function getCustomProviderCreator(cfg: RemotesConfig) {
 	}
 }
 
-export function getRemoteProviderMatcher(
+export async function getRemoteProviderMatcher(
 	container: Container,
 	providers?: RemoteProviders,
-): (url: string, domain: string, path: string) => RemoteProvider | undefined {
+): Promise<(url: string, domain: string, path: string) => RemoteProvider | undefined> {
 	if (providers == null) {
 		providers = loadRemoteProviders(
 			configuration.get('remotes', null),
-			container.integrations.getConfiguredIntegrationDescriptors(),
+			await container.integrations.getConfigured(),
 		);
 	}
 

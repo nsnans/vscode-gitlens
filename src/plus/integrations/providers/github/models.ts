@@ -1,5 +1,5 @@
 import type { Endpoints } from '@octokit/types';
-import { GitFileIndexStatus } from '../../../../git/models/file';
+import { GitFileIndexStatus } from '../../../../git/models/fileStatus';
 import type { IssueLabel } from '../../../../git/models/issue';
 import { Issue, RepositoryAccessLevel } from '../../../../git/models/issue';
 import type { PullRequestState } from '../../../../git/models/pullRequest';
@@ -296,6 +296,10 @@ export function toGitHubPullRequestMergeableState(
 			return 'MERGEABLE';
 		case PullRequestMergeableState.Conflicting:
 			return 'CONFLICTING';
+		case PullRequestMergeableState.FailingChecks:
+			return 'UNKNOWN';
+		case PullRequestMergeableState.BlockedByPolicy:
+			return 'UNKNOWN';
 		case PullRequestMergeableState.Unknown:
 			return 'UNKNOWN';
 	}

@@ -1,4 +1,6 @@
 import type { CancellationToken, Disposable } from 'vscode';
+import type { IntegrationId } from '../../constants.integrations';
+import { HostingIntegrationId, IssueIntegrationId, SelfHostedIntegrationId } from '../../constants.integrations';
 import type { Container } from '../../container';
 import { AuthenticationRequiredError, CancellationError } from '../../errors';
 import type { RemoteProvider } from '../../git/remotes/remoteProvider';
@@ -6,51 +8,14 @@ import { log } from '../../system/decorators/log';
 import { Logger } from '../../system/logger';
 import { getLogScope } from '../../system/logger.scope';
 import type { ServerConnection } from '../gk/serverConnection';
-import { ensureAccount } from '../utils';
-
-export interface EnrichableItem {
-	type: EnrichedItemResponse['entityType'];
-	id: string;
-	provider: EnrichedItemResponse['provider'];
-	url: string;
-	expiresAt?: string;
-}
-
-export type EnrichedItem = {
-	id: string;
-	userId?: string;
-	type: EnrichedItemResponse['type'];
-
-	provider: EnrichedItemResponse['provider'];
-	entityType: EnrichedItemResponse['entityType'];
-	entityId: string;
-	entityUrl: string;
-
-	createdAt: string;
-	updatedAt: string;
-	expiresAt?: string;
-};
+import { ensureAccount } from '../gk/utils/-webview/acount.utils';
+import type { EnrichableItem, EnrichedItem, EnrichedItemResponse } from './models/enrichedItem';
 
 type EnrichedItemRequest = {
 	provider: EnrichedItemResponse['provider'];
 	entityType: EnrichedItemResponse['entityType'];
 	entityId: string;
 	entityUrl: string;
-	expiresAt?: string;
-};
-
-type EnrichedItemResponse = {
-	id: string;
-	userId?: string;
-	type: 'pin' | 'snooze';
-
-	provider: 'azure' | 'bitbucket' | 'github' | 'gitlab' | 'jira' | 'trello' | 'gitkraken';
-	entityType: 'issue' | 'pr';
-	entityId: string;
-	entityUrl: string;
-
-	createdAt: string;
-	updatedAt: string;
 	expiresAt?: string;
 };
 
@@ -218,8 +183,22 @@ const supportedRemoteProvidersToEnrich: Record<RemoteProvider['id'], EnrichedIte
 	gitea: undefined,
 	github: 'github',
 	'cloud-github-enterprise': 'github',
+	'cloud-gitlab-self-hosted': 'gitlab',
 	gitlab: 'gitlab',
 	'google-source': undefined,
+};
+
+const supportedIntegrationIdsToEnrich: Record<IntegrationId, EnrichedItemResponse['provider'] | undefined> = {
+	[HostingIntegrationId.AzureDevOps]: 'azure',
+	[HostingIntegrationId.GitLab]: 'gitlab',
+	[HostingIntegrationId.GitHub]: 'github',
+	[HostingIntegrationId.Bitbucket]: 'bitbucket',
+	[SelfHostedIntegrationId.CloudGitHubEnterprise]: 'github',
+	[SelfHostedIntegrationId.GitHubEnterprise]: 'github',
+	[SelfHostedIntegrationId.CloudGitLabSelfHosted]: 'gitlab',
+	[SelfHostedIntegrationId.GitLabSelfHosted]: 'gitlab',
+	[IssueIntegrationId.Jira]: 'jira',
+	[IssueIntegrationId.Trello]: 'trello',
 };
 
 export function convertRemoteProviderToEnrichProvider(provider: RemoteProvider): EnrichedItemResponse['provider'] {
@@ -234,4 +213,14 @@ export function convertRemoteProviderIdToEnrichProvider(id: RemoteProvider['id']
 
 export function isEnrichableRemoteProviderId(id: string): id is RemoteProvider['id'] {
 	return supportedRemoteProvidersToEnrich[id as RemoteProvider['id']] != null;
+}
+
+export function isEnrichableIntegrationId(id: IntegrationId): boolean {
+	return supportedIntegrationIdsToEnrich[id] != null;
+}
+
+export function convertIntegrationIdToEnrichProvider(id: IntegrationId): EnrichedItemResponse['provider'] {
+	const enrichProvider = supportedIntegrationIdsToEnrich[id];
+	if (enrichProvider == null) throw new Error(`Unknown integration id '${id}'`);
+	return enrichProvider;
 }

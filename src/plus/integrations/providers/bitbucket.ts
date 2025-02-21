@@ -2,7 +2,8 @@ import type { AuthenticationSession, CancellationToken } from 'vscode';
 import { HostingIntegrationId } from '../../../constants.integrations';
 import type { Account } from '../../../git/models/author';
 import type { DefaultBranch } from '../../../git/models/defaultBranch';
-import type { Issue, IssueOrPullRequest, SearchedIssue } from '../../../git/models/issue';
+import type { Issue, SearchedIssue } from '../../../git/models/issue';
+import type { IssueOrPullRequest } from '../../../git/models/issueOrPullRequest';
 import type {
 	PullRequest,
 	PullRequestMergeMethod,
@@ -10,7 +11,7 @@ import type {
 	SearchedPullRequest,
 } from '../../../git/models/pullRequest';
 import type { RepositoryMetadata } from '../../../git/models/repositoryMetadata';
-import type { IntegrationAuthenticationProviderDescriptor } from '../authentication/integrationAuthentication';
+import type { IntegrationAuthenticationProviderDescriptor } from '../authentication/integrationAuthenticationProvider';
 import type { ResourceDescriptor } from '../integration';
 import { HostingIntegration } from '../integration';
 import { providersMetadata } from './models';
@@ -135,4 +136,9 @@ export class BitbucketIntegration extends HostingIntegration<
 	): Promise<SearchedIssue[] | undefined> {
 		return Promise.resolve(undefined);
 	}
+}
+
+const bitbucketCloudDomainRegex = /^bitbucket\.org$/i;
+export function isBitbucketCloudDomain(domain: string | undefined): boolean {
+	return domain != null && bitbucketCloudDomainRegex.test(domain);
 }

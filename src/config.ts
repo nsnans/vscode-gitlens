@@ -211,9 +211,15 @@ interface AIConfig {
 	readonly explainChanges: {
 		readonly customInstructions: string;
 	};
+	readonly generateChangelog: {
+		readonly customInstructions: string;
+	};
 	readonly generateCommitMessage: {
 		readonly customInstructions: string;
 		readonly enabled: boolean;
+	};
+	readonly generateStashMessage: {
+		readonly customInstructions: string;
 	};
 	readonly generateCloudPatchMessage: {
 		readonly customInstructions: string;
@@ -222,6 +228,9 @@ interface AIConfig {
 		readonly customInstructions: string;
 	};
 	readonly model: SupportedAIModels | null;
+	readonly modelOptions: {
+		readonly temperature: number;
+	};
 	readonly openai: {
 		readonly url: string | null;
 	};
@@ -364,6 +373,7 @@ export interface GraphConfig {
 		readonly dataType: 'commits' | 'lines';
 		readonly additionalTypes: GraphMinimapMarkersAdditionalTypes[];
 	};
+	readonly multiselect: boolean;
 	readonly onlyFollowFirstParent: boolean;
 	readonly pageItemLimit: number;
 	readonly pullRequests: {
@@ -681,6 +691,7 @@ export interface ViewsCommonConfig {
 			readonly tooltip: string;
 		};
 	};
+	readonly multiselect: boolean;
 	readonly openChangesInMultiDiffEditor: boolean;
 	readonly pageItemLimit: number;
 	readonly scm: {
