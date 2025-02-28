@@ -1,7 +1,7 @@
 import { css, html, LitElement, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { when } from 'lit/directives/when.js';
-import type { Commands } from '../../../../../constants.commands';
+import type { GlCommands } from '../../../../../constants.commands';
 import type { GitPausedOperationStatus } from '../../../../../git/models/pausedOperationStatus';
 import { pausedOperationStatusStringsByType } from '../../../../../git/utils/pausedOperationStatus.utils';
 import { createCommandLink } from '../../../../../system/commands';
@@ -74,23 +74,38 @@ export class GlMergeConflictWarning extends LitElement {
 	@property()
 	openEditorCommand = 'gitlens.home.openRebaseEditor';
 
+	@property({ type: Object })
+	webviewCommandContext?: { webview: string; webviewInstance: string | undefined };
+
 	private get onSkipUrl() {
-		return createCommandLink(this.skipCommand as Commands, this.pausedOpStatus);
+		return this.createCommandLink(this.skipCommand as GlCommands, this.pausedOpStatus);
 	}
 
 	private get onContinueUrl() {
-		return createCommandLink(this.continueCommand as Commands, this.pausedOpStatus);
+		return this.createCommandLink(this.continueCommand as GlCommands, this.pausedOpStatus);
 	}
 
 	private get onAbortUrl() {
-		return createCommandLink(this.abortCommand as Commands, this.pausedOpStatus);
+		return this.createCommandLink(this.abortCommand as GlCommands, this.pausedOpStatus);
 	}
 
 	private get onOpenEditorUrl() {
-		return createCommandLink(this.openEditorCommand as Commands, this.pausedOpStatus);
+		return this.createCommandLink(this.openEditorCommand as GlCommands, this.pausedOpStatus);
 	}
 
-	override render() {
+	private createCommandLink(command: string, args?: any) {
+		if (this.webviewCommandContext != null) {
+			if (args == null) {
+				args = this.webviewCommandContext;
+			} else {
+				args = { ...args, ...this.webviewCommandContext };
+			}
+		}
+
+		return createCommandLink(command as GlCommands, args);
+	}
+
+	override render(): unknown {
 		if (this.pausedOpStatus == null) return nothing;
 
 		return html`

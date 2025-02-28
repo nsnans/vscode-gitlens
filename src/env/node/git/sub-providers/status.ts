@@ -18,16 +18,17 @@ import type {
 	GitRevertStatus,
 } from '../../../../git/models/pausedOperationStatus';
 import type { GitBranchReference, GitTagReference } from '../../../../git/models/reference';
-import { createReference, getReferenceFromBranch } from '../../../../git/models/reference.utils';
-import type { GitStatusFile } from '../../../../git/models/status';
 import { GitStatus } from '../../../../git/models/status';
+import type { GitStatusFile } from '../../../../git/models/statusFile';
 import { parseGitStatus } from '../../../../git/parsers/statusParser';
-import { gate } from '../../../../system/decorators/gate';
+import { getReferenceFromBranch } from '../../../../git/utils/-webview/reference.utils';
+import { createReference } from '../../../../git/utils/reference.utils';
+import { configuration } from '../../../../system/-webview/configuration';
+import { splitPath } from '../../../../system/-webview/path';
+import { gate } from '../../../../system/decorators/-webview/gate';
 import { log } from '../../../../system/decorators/log';
 import { Logger } from '../../../../system/logger';
 import { getSettledValue } from '../../../../system/promise';
-import { configuration } from '../../../../system/vscode/configuration';
-import { splitPath } from '../../../../system/vscode/path';
 import type { Git } from '../git';
 import { GitErrors } from '../git';
 import type { LocalGitProvider } from '../localGitProvider';
@@ -46,7 +47,7 @@ export class StatusGitSubProvider implements GitStatusSubProvider {
 		let status = this.cache.pausedOperationStatus?.get(repoPath);
 		if (status == null) {
 			async function getCore(this: StatusGitSubProvider): Promise<GitPausedOperationStatus | undefined> {
-				const gitDir = await this.provider.getGitDir(repoPath);
+				const gitDir = await this.provider.config.getGitDir(repoPath);
 
 				type Operation = 'cherry-pick' | 'merge' | 'rebase-apply' | 'rebase-merge' | 'revert';
 				const operation = await new Promise<Operation | undefined>((resolve, _) => {
@@ -96,7 +97,7 @@ export class StatusGitSubProvider implements GitStatusSubProvider {
 				switch (operation) {
 					case 'cherry-pick': {
 						const cherryPickHead = (
-							await this.git.exec<string>(
+							await this.git.exec(
 								{ cwd: repoPath, errors: GitErrorHandling.Ignore },
 								'rev-parse',
 								'--quiet',
@@ -119,7 +120,7 @@ export class StatusGitSubProvider implements GitStatusSubProvider {
 					}
 					case 'merge': {
 						const mergeHead = (
-							await this.git.exec<string>(
+							await this.git.exec(
 								{ cwd: repoPath, errors: GitErrorHandling.Ignore },
 								'rev-parse',
 								'--quiet',
@@ -132,7 +133,7 @@ export class StatusGitSubProvider implements GitStatusSubProvider {
 						const [branchResult, mergeBaseResult, possibleSourceBranchesResult] = await Promise.allSettled([
 							this.provider.branches.getBranch(repoPath),
 							this.provider.branches.getMergeBase(repoPath, 'MERGE_HEAD', 'HEAD'),
-							this.provider.branches.getBranchesForCommit(repoPath, ['MERGE_HEAD'], undefined, {
+							this.provider.branches.getBranchesWithCommits(repoPath, ['MERGE_HEAD'], undefined, {
 								all: true,
 								mode: 'pointsAt',
 							}),
@@ -160,7 +161,7 @@ export class StatusGitSubProvider implements GitStatusSubProvider {
 					}
 					case 'revert': {
 						const revertHead = (
-							await this.git.exec<string>(
+							await this.git.exec(
 								{ cwd: repoPath, errors: GitErrorHandling.Ignore },
 								'rev-parse',
 								'--quiet',
@@ -193,7 +194,7 @@ export class StatusGitSubProvider implements GitStatusSubProvider {
 							stepsTotalResult,
 							stepsMessageResult,
 						] = await Promise.allSettled([
-							await this.git.exec<string>(
+							this.git.exec(
 								{ cwd: repoPath, errors: GitErrorHandling.Ignore },
 								'rev-parse',
 								'--quiet',
@@ -213,26 +214,24 @@ export class StatusGitSubProvider implements GitStatusSubProvider {
 						const onto = getSettledValue(ontoResult);
 						if (origHead == null || onto == null) return undefined;
 
-						let mergeBase;
-						const rebaseHead = getSettledValue(rebaseHeadResult);
-						if (rebaseHead != null) {
-							mergeBase = await this.provider.branches.getMergeBase(repoPath, rebaseHead, 'HEAD');
-						} else {
-							mergeBase = await this.provider.branches.getMergeBase(repoPath, onto, origHead);
-						}
+						const rebaseHead = getSettledValue(rebaseHeadResult)?.trim();
 
 						if (branch.startsWith('refs/heads/')) {
 							branch = branch.substring(11).trim();
 						}
 
-						const [branchTipsResult, tagTipsResult] = await Promise.allSettled([
-							this.provider.branches.getBranchesForCommit(repoPath, [onto], undefined, {
+						const [mergeBaseResult, branchTipsResult, tagTipsResult] = await Promise.allSettled([
+							rebaseHead != null
+								? this.provider.branches.getMergeBase(repoPath, rebaseHead, 'HEAD')
+								: this.provider.branches.getMergeBase(repoPath, onto, origHead),
+							this.provider.branches.getBranchesWithCommits(repoPath, [onto], undefined, {
 								all: true,
 								mode: 'pointsAt',
 							}),
-							this.provider.getCommitTags(repoPath, onto, { mode: 'pointsAt' }),
+							this.provider.tags.getTagsWithCommit(repoPath, onto, { mode: 'pointsAt' }),
 						]);
 
+						const mergeBase = getSettledValue(mergeBaseResult);
 						const branchTips = getSettledValue(branchTipsResult);
 						const tagTips = getSettledValue(tagTipsResult);
 
@@ -472,12 +471,13 @@ export class StatusGitSubProvider implements GitStatusSubProvider {
 		const data = await this.git.status(repoPath, porcelainVersion, {
 			similarityThreshold: configuration.get('advanced.similarityThreshold') ?? undefined,
 		});
-		const status = parseGitStatus(data, repoPath, porcelainVersion);
+		const status = parseGitStatus(this.container, data, repoPath, porcelainVersion);
 
 		if (status?.detached) {
 			const pausedOpStatus = await this.getPausedOperationStatus(repoPath);
 			if (pausedOpStatus?.type === 'rebase') {
 				return new GitStatus(
+					this.container,
 					repoPath,
 					pausedOpStatus.incoming.name,
 					status.sha,
@@ -494,27 +494,27 @@ export class StatusGitSubProvider implements GitStatusSubProvider {
 	@gate()
 	@log()
 	async getStatusForFile(repoPath: string, pathOrUri: string | Uri): Promise<GitStatusFile | undefined> {
-		const status = await this.getStatus(repoPath);
-		if (!status?.files.length) return undefined;
-
-		const [relativePath] = splitPath(pathOrUri, repoPath);
-		const file = status.files.find(f => f.path === relativePath);
-		return file;
+		const files = await this.getStatusForPath(repoPath, pathOrUri);
+		return files?.[0];
 	}
 
 	@gate()
 	@log()
-	async getStatusForFiles(repoPath: string, pathOrGlob: Uri): Promise<GitStatusFile[] | undefined> {
-		let [relativePath] = splitPath(pathOrGlob, repoPath);
-		if (!relativePath.endsWith('/*')) {
-			return this.getStatusForFile(repoPath, pathOrGlob).then(f => (f != null ? [f] : undefined));
-		}
+	async getStatusForPath(repoPath: string, pathOrGlob: string | Uri): Promise<GitStatusFile[] | undefined> {
+		const [relativePath] = splitPath(pathOrGlob, repoPath);
 
-		relativePath = relativePath.substring(0, relativePath.length - 1);
-		const status = await this.getStatus(repoPath);
-		if (!status?.files.length) return undefined;
+		const porcelainVersion = (await this.git.isAtLeastVersion('2.11')) ? 2 : 1;
 
-		const files = status.files.filter(f => f.path.startsWith(relativePath));
-		return files;
+		const data = await this.git.status(
+			repoPath,
+			porcelainVersion,
+			{
+				similarityThreshold: configuration.get('advanced.similarityThreshold') ?? undefined,
+			},
+			relativePath,
+		);
+
+		const status = parseGitStatus(this.container, data, repoPath, porcelainVersion);
+		return status?.files;
 	}
 }

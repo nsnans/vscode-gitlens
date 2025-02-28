@@ -4,7 +4,7 @@ import { getQueryDataFromScmGitUri } from '../@types/vscode.git.uri';
 import { GlyphChars, Schemes } from '../constants';
 import type { Colors } from '../constants.colors';
 import type { GitBranchStatus } from '../git/models/branch';
-import type { GitFileStatus } from '../git/models/file';
+import type { GitFileStatus } from '../git/models/fileStatus';
 import type { GitPausedOperation } from '../git/models/pausedOperationStatus';
 
 export class ViewFileDecorationProvider implements FileDecorationProvider, Disposable {
@@ -207,17 +207,25 @@ function getCommitFileStatusDecoration(uri: Uri, _token: CancellationToken): Fil
 }
 
 interface RemoteViewDecoration {
-	default?: boolean;
+	state?: 'default' | 'missing';
 }
 
 function getRemoteDecoration(uri: Uri, _token: CancellationToken): FileDecoration | undefined {
 	const state = getViewDecoration<'remote'>(uri);
 
-	if (state?.default) {
-		return {
-			badge: GlyphChars.Check,
-			tooltip: 'Default Remote',
-		};
+	switch (state?.state) {
+		case 'default':
+			return {
+				badge: GlyphChars.Check,
+				tooltip: 'Default Remote',
+			};
+
+		case 'missing':
+			return {
+				badge: '?',
+				color: new ThemeColor('gitlens.decorations.workspaceRepoMissingForegroundColor' satisfies Colors),
+				tooltip: '',
+			};
 	}
 
 	return undefined;

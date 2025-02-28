@@ -1,12 +1,12 @@
 import type { Container } from '../../../../container';
 import type { GitCache } from '../../../../git/cache';
 import type { GitContributorsSubProvider } from '../../../../git/gitProvider';
-import type { GitContributorStats } from '../../../../git/models/contributor';
+import type { GitContributorsStats } from '../../../../git/models/contributor';
 import { GitContributor } from '../../../../git/models/contributor';
-import { calculateContributionScore } from '../../../../git/models/contributor.utils';
-import { isUserMatch } from '../../../../git/models/user';
 import { getContributorsParser } from '../../../../git/parsers/logParser';
-import { gate } from '../../../../system/decorators/gate';
+import { calculateContributionScore } from '../../../../git/utils/contributor.utils';
+import { isUserMatch } from '../../../../git/utils/user.utils';
+import { gate } from '../../../../system/decorators/-webview/gate';
 import { log } from '../../../../system/decorators/log';
 import { Logger } from '../../../../system/logger';
 import { getLogScope } from '../../../../system/logger.scope';
@@ -26,11 +26,12 @@ export class ContributorsGitSubProvider implements GitContributorsSubProvider {
 	@log()
 	async getContributors(
 		repoPath: string,
-		options?: { all?: boolean; merges?: boolean | 'first-parent'; ref?: string; stats?: boolean },
+		rev?: string | undefined,
+		options?: { all?: boolean; merges?: boolean | 'first-parent'; stats?: boolean },
 	): Promise<GitContributor[]> {
 		if (repoPath == null) return [];
 
-		let key = options?.ref ?? '';
+		let key = rev ?? '';
 		if (options?.all) {
 			key += ':all';
 		}
@@ -48,10 +49,10 @@ export class ContributorsGitSubProvider implements GitContributorsSubProvider {
 			async function load(this: ContributorsGitSubProvider) {
 				try {
 					repoPath = normalizePath(repoPath);
-					const currentUser = await this.provider.getCurrentUser(repoPath);
+					const currentUser = await this.provider.config.getCurrentUser(repoPath);
 					const parser = getContributorsParser(options?.stats);
 
-					const args = [...parser.arguments, '--full-history', '--use-mailmap'];
+					const args = [...parser.arguments, '--use-mailmap'];
 
 					const merges = options?.merges ?? true;
 					if (merges) {
@@ -64,7 +65,7 @@ export class ContributorsGitSubProvider implements GitContributorsSubProvider {
 						args.push('--all', '--single-worktree');
 					}
 
-					const data = await this.git.log(repoPath, { ref: options?.ref }, ...args);
+					const data = await this.git.log(repoPath, rev, undefined, ...args);
 
 					const contributors = new Map<string, GitContributor>();
 					const commits = parser.parse(data);
@@ -78,10 +79,10 @@ export class ContributorsGitSubProvider implements GitContributorsSubProvider {
 								repoPath,
 								c.author,
 								c.email,
+								isUserMatch(currentUser, c.author, c.email),
 								1,
 								new Date(timestamp),
 								new Date(timestamp),
-								isUserMatch(currentUser, c.author, c.email),
 								c.stats
 									? {
 											...c.stats,
@@ -143,22 +144,21 @@ export class ContributorsGitSubProvider implements GitContributorsSubProvider {
 	async getContributorsStats(
 		repoPath: string,
 		options?: { merges?: boolean; since?: string },
-	): Promise<GitContributorStats | undefined> {
+	): Promise<GitContributorsStats | undefined> {
 		if (repoPath == null) return undefined;
 
 		const scope = getLogScope();
 
-		const args = ['shortlog', '-s', '--all'];
-		if (!options?.merges) {
-			args.push('--no-merges');
-		}
-		if (options?.since) {
-			args.push(`--since=${options.since}`);
-		}
-
 		try {
-			const data = await this.git.exec<string>({ cwd: repoPath }, ...args);
-			if (data == null) return undefined;
+			const data = await this.git.exec(
+				{ cwd: repoPath },
+				'shortlog',
+				'-s',
+				'--all',
+				!options?.merges ? '--no-merges' : undefined,
+				options?.since ? `--since=${options.since}` : undefined,
+			);
+			if (!data) return undefined;
 
 			const contributions = data
 				.split('\n')
@@ -166,7 +166,7 @@ export class ContributorsGitSubProvider implements GitContributorsSubProvider {
 				.filter(c => !isNaN(c))
 				.sort((a, b) => b - a);
 
-			const result: GitContributorStats = {
+			const result: GitContributorsStats = {
 				count: contributions.length,
 				contributions: contributions,
 			};

@@ -22,6 +22,7 @@ import {
 	LaunchpadSettingsQuickInputButton,
 	LearnAboutProQuickInputButton,
 	MergeQuickInputButton,
+	OpenOnAzureDevOpsQuickInputButton,
 	OpenOnGitHubQuickInputButton,
 	OpenOnGitLabQuickInputButton,
 	OpenOnWebQuickInputButton,
@@ -35,7 +36,6 @@ import {
 import { ensureAccessStep } from '../../commands/quickCommand.steps';
 import type { OpenWalkthroughCommandArgs } from '../../commands/walkthroughs';
 import { proBadge, urls } from '../../constants';
-import { GlCommand } from '../../constants.commands';
 import type { IntegrationId } from '../../constants.integrations';
 import { HostingIntegrationId, SelfHostedIntegrationId } from '../../constants.integrations';
 import type { LaunchpadTelemetryContext, Source, Sources, TelemetryEvents } from '../../constants.telemetry';
@@ -45,14 +45,14 @@ import type { QuickPickItemOfT } from '../../quickpicks/items/common';
 import { createQuickPickItemOfT, createQuickPickSeparator } from '../../quickpicks/items/common';
 import type { DirectiveQuickPickItem } from '../../quickpicks/items/directive';
 import { createDirectiveQuickPickItem, Directive, isDirectiveQuickPickItem } from '../../quickpicks/items/directive';
+import { createAsyncDebouncer } from '../../system/-webview/asyncDebouncer';
+import { executeCommand } from '../../system/-webview/command';
+import { configuration } from '../../system/-webview/configuration';
+import { openUrl } from '../../system/-webview/vscode';
 import { getScopedCounter } from '../../system/counter';
 import { fromNow } from '../../system/date';
 import { some } from '../../system/iterable';
 import { interpolate, pluralize } from '../../system/string';
-import { createAsyncDebouncer } from '../../system/vscode/asyncDebouncer';
-import { executeCommand } from '../../system/vscode/command';
-import { configuration } from '../../system/vscode/configuration';
-import { openUrl } from '../../system/vscode/utils';
 import { ProviderBuildStatusState, ProviderPullRequestReviewState } from '../integrations/providers/models';
 import type { LaunchpadCategorizedResult, LaunchpadItem } from './launchpadProvider';
 import {
@@ -61,8 +61,8 @@ import {
 	groupAndSortLaunchpadItems,
 	supportedLaunchpadIntegrations,
 } from './launchpadProvider';
-import type { LaunchpadAction, LaunchpadGroup, LaunchpadTargetAction } from './models';
-import { actionGroupMap, launchpadGroupIconMap, launchpadGroupLabelMap, launchpadGroups } from './models';
+import type { LaunchpadAction, LaunchpadGroup, LaunchpadTargetAction } from './models/launchpad';
+import { actionGroupMap, launchpadGroupIconMap, launchpadGroupLabelMap, launchpadGroups } from './models/launchpad';
 
 export interface LaunchpadItemQuickPickItem extends QuickPickItem {
 	readonly type: 'item';
@@ -199,6 +199,8 @@ export class LaunchpadCommand extends QuickCommand<State> {
 
 	private async ensureIntegrationConnected(id: IntegrationId) {
 		const integration = await this.container.integrations.get(id);
+		if (integration == null) return false;
+
 		let connected = integration.maybeConnected ?? (await integration.isConnected());
 		if (!connected) {
 			connected = await integration.connect('launchpad');
@@ -287,7 +289,7 @@ export class LaunchpadCommand extends QuickCommand<State> {
 				newlyConnected = Boolean(connected);
 			}
 
-			const result = yield* ensureAccessStep(state, context, PlusFeatures.Launchpad);
+			const result = yield* ensureAccessStep(this.container, state, context, PlusFeatures.Launchpad);
 			if (result === StepResultBreak) continue;
 
 			await updateContextItems(this.container, context, { force: newlyConnected });
@@ -318,7 +320,7 @@ export class LaunchpadCommand extends QuickCommand<State> {
 				opened = true;
 
 				const result = yield* this.pickLaunchpadItemStep(state, context, {
-					picked: state.item?.graphQLId,
+					picked: state.item?.graphQLId ?? state.item?.uuid,
 					selectTopItem: state.selectTopItem,
 				});
 				if (result === StepResultBreak) {
@@ -505,9 +507,19 @@ export class LaunchpadCommand extends QuickCommand<State> {
 
 				alwaysShow: alwaysShow,
 				buttons: buttons,
-				iconPath: i.author?.avatarUrl != null ? Uri.parse(i.author.avatarUrl) : undefined,
+				iconPath:
+					i.provider.id === HostingIntegrationId.AzureDevOps
+						? new ThemeIcon('account')
+						: i.author?.avatarUrl != null
+						  ? Uri.parse(i.author.avatarUrl)
+						  : undefined,
 				item: i,
-				picked: i.graphQLId === picked || i.graphQLId === topItem?.graphQLId,
+				picked:
+					i.graphQLId != null
+						? i.graphQLId === picked || i.graphQLId === topItem?.graphQLId
+						: i.uuid != null
+						  ? i.uuid === picked || i.uuid === topItem?.uuid
+						  : false,
 				group: ui,
 			};
 		};
@@ -822,6 +834,7 @@ export class LaunchpadCommand extends QuickCommand<State> {
 				switch (button) {
 					case OpenOnGitHubQuickInputButton:
 					case OpenOnGitLabQuickInputButton:
+					case OpenOnAzureDevOpsQuickInputButton:
 						this.sendItemActionTelemetry('soft-open', item, group, context);
 						this.container.launchpad.open(item);
 						break;
@@ -925,7 +938,11 @@ export class LaunchpadCommand extends QuickCommand<State> {
 							createdDateRelative: fromNow(state.item.createdDate),
 						}),
 						iconPath:
-							state.item.author?.avatarUrl != null ? Uri.parse(state.item.author.avatarUrl) : undefined,
+							state.item.provider.id === HostingIntegrationId.AzureDevOps
+								? new ThemeIcon('account')
+								: state.item.author?.avatarUrl != null
+								  ? Uri.parse(state.item.author.avatarUrl)
+								  : undefined,
 						buttons: [
 							...gitProviderWebButtons,
 							...(state.item.isSearched
@@ -1084,6 +1101,7 @@ export class LaunchpadCommand extends QuickCommand<State> {
 					switch (button) {
 						case OpenOnGitHubQuickInputButton:
 						case OpenOnGitLabQuickInputButton:
+						case OpenOnAzureDevOpsQuickInputButton:
 							this.sendItemActionTelemetry('soft-open', state.item, state.item.group, context);
 							this.container.launchpad.open(state.item);
 							break;
@@ -1162,10 +1180,9 @@ export class LaunchpadCommand extends QuickCommand<State> {
 						detail: 'Click to learn more about Launchpad',
 						iconPath: new ThemeIcon('rocket'),
 						onDidSelect: () =>
-							void executeCommand<OpenWalkthroughCommandArgs>(GlCommand.OpenWalkthrough, {
+							void executeCommand<OpenWalkthroughCommandArgs>('gitlens.openWalkthrough', {
 								step: 'accelerate-pr-reviews',
-								source: 'launchpad',
-								detail: 'info',
+								source: { source: 'launchpad', detail: 'info' },
 							}),
 					}),
 					createQuickPickSeparator(),
@@ -1216,7 +1233,7 @@ export class LaunchpadCommand extends QuickCommand<State> {
 			const resume = step.freeze?.();
 			const chosenIntegrationId = selection[0].item;
 			const connected = await this.ensureIntegrationConnected(chosenIntegrationId);
-			return { connected: connected ? chosenIntegrationId : false, resume: () => resume?.[Symbol.dispose]() };
+			return { connected: connected ? chosenIntegrationId : false, resume: () => resume?.dispose() };
 		}
 
 		return StepResultBreak;
@@ -1238,10 +1255,9 @@ export class LaunchpadCommand extends QuickCommand<State> {
 								detail: 'Click to learn more about Launchpad',
 								iconPath: new ThemeIcon('rocket'),
 								onDidSelect: () =>
-									void executeCommand<OpenWalkthroughCommandArgs>(GlCommand.OpenWalkthrough, {
+									void executeCommand<OpenWalkthroughCommandArgs>('gitlens.openWalkthrough', {
 										step: 'accelerate-pr-reviews',
-										source: 'launchpad',
-										detail: 'info',
+										source: { source: 'launchpad', detail: 'info' },
 									}),
 							}),
 							createQuickPickSeparator(),
@@ -1285,7 +1301,7 @@ export class LaunchpadCommand extends QuickCommand<State> {
 			if (step.quickpick) {
 				step.quickpick.placeholder = previousPlaceholder;
 			}
-			return { connected: connected, resume: () => resume?.[Symbol.dispose]() };
+			return { connected: connected, resume: () => resume?.dispose() };
 		}
 
 		return StepResultBreak;
@@ -1473,7 +1489,12 @@ function getLaunchpadItemReviewInformation(item: LaunchpadItem): QuickPickItemOf
 	for (const review of item.reviews) {
 		const isCurrentUser = review.reviewer.username === item.currentViewer.username;
 		let reviewLabel: string | undefined;
-		const iconPath = review.reviewer.avatarUrl != null ? Uri.parse(review.reviewer.avatarUrl) : undefined;
+		const iconPath =
+			item.provider.id === HostingIntegrationId.AzureDevOps
+				? new ThemeIcon('account')
+				: review.reviewer.avatarUrl != null
+				  ? Uri.parse(review.reviewer.avatarUrl)
+				  : undefined;
 		switch (review.state) {
 			case ProviderPullRequestReviewState.Approved:
 				reviewLabel = `${isCurrentUser ? 'You' : review.reviewer.username} approved these changes`;
@@ -1564,11 +1585,14 @@ function getOpenOnGitProviderQuickInputButton(integrationId: string): QuickInput
 	switch (integrationId) {
 		case HostingIntegrationId.GitLab:
 		case SelfHostedIntegrationId.GitLabSelfHosted:
+		case SelfHostedIntegrationId.CloudGitLabSelfHosted:
 			return OpenOnGitLabQuickInputButton;
 		case HostingIntegrationId.GitHub:
 		case SelfHostedIntegrationId.GitHubEnterprise:
 		case SelfHostedIntegrationId.CloudGitHubEnterprise:
 			return OpenOnGitHubQuickInputButton;
+		case HostingIntegrationId.AzureDevOps:
+			return OpenOnAzureDevOpsQuickInputButton;
 		default:
 			return undefined;
 	}
@@ -1583,11 +1607,14 @@ function getIntegrationTitle(integrationId: string): string {
 	switch (integrationId) {
 		case HostingIntegrationId.GitLab:
 		case SelfHostedIntegrationId.GitLabSelfHosted:
+		case SelfHostedIntegrationId.CloudGitLabSelfHosted:
 			return 'GitLab';
 		case HostingIntegrationId.GitHub:
 		case SelfHostedIntegrationId.GitHubEnterprise:
 		case SelfHostedIntegrationId.CloudGitHubEnterprise:
 			return 'GitHub';
+		case HostingIntegrationId.AzureDevOps:
+			return 'Azure DevOps';
 		default:
 			return integrationId;
 	}

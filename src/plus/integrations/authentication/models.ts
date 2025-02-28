@@ -7,19 +7,20 @@ import {
 	supportedOrderedCloudIntegrationIds,
 	supportedOrderedCloudIssueIntegrationIds,
 } from '../../../constants.integrations';
-import { configuration } from '../../../system/vscode/configuration';
+import { configuration } from '../../../system/-webview/configuration';
 
 export interface ProviderAuthenticationSession extends AuthenticationSession {
 	readonly cloud: boolean;
 	readonly expiresAt?: Date;
+	readonly domain: string;
 }
 
 export interface ConfiguredIntegrationDescriptor {
 	readonly cloud: boolean;
 	readonly integrationId: IntegrationId;
+	readonly scopes: string;
 	readonly domain?: string;
 	readonly expiresAt?: string | Date;
-	readonly scopes: string;
 }
 
 export interface CloudIntegrationAuthenticationSession {
@@ -40,7 +41,15 @@ export interface CloudIntegrationConnection {
 	domain: string;
 }
 
-export type CloudIntegrationType = 'jira' | 'trello' | 'gitlab' | 'github' | 'bitbucket' | 'azure' | 'githubEnterprise';
+export type CloudIntegrationType =
+	| 'jira'
+	| 'trello'
+	| 'gitlab'
+	| 'github'
+	| 'bitbucket'
+	| 'azure'
+	| 'githubEnterprise'
+	| 'gitlabSelfHosted';
 
 export type CloudIntegrationAuthType = 'oauth' | 'pat';
 
@@ -62,6 +71,7 @@ export const toIntegrationId: { [key in CloudIntegrationType]: IntegrationId } =
 	gitlab: HostingIntegrationId.GitLab,
 	github: HostingIntegrationId.GitHub,
 	githubEnterprise: SelfHostedIntegrationId.CloudGitHubEnterprise,
+	gitlabSelfHosted: SelfHostedIntegrationId.CloudGitLabSelfHosted,
 	bitbucket: HostingIntegrationId.Bitbucket,
 	azure: HostingIntegrationId.AzureDevOps,
 };
@@ -74,6 +84,7 @@ export const toCloudIntegrationType: { [key in IntegrationId]: CloudIntegrationT
 	[HostingIntegrationId.Bitbucket]: 'bitbucket',
 	[HostingIntegrationId.AzureDevOps]: 'azure',
 	[SelfHostedIntegrationId.CloudGitHubEnterprise]: 'githubEnterprise',
+	[SelfHostedIntegrationId.CloudGitLabSelfHosted]: 'gitlabSelfHosted',
 	[SelfHostedIntegrationId.GitHubEnterprise]: undefined,
 	[SelfHostedIntegrationId.GitLabSelfHosted]: undefined,
 };

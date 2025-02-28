@@ -1,7 +1,12 @@
 import type { CancellationToken, Event, MessageItem } from 'vscode';
 import { EventEmitter, window } from 'vscode';
-import type { AutolinkReference, DynamicAutolinkReference } from '../../autolinks';
-import type { IntegrationId, IssueIntegrationId, SelfHostedIntegrationId } from '../../constants.integrations';
+import type { AutolinkReference, DynamicAutolinkReference } from '../../autolinks/models/autolinks';
+import type {
+	CloudSelfHostedIntegrationId,
+	IntegrationId,
+	IssueIntegrationId,
+	SelfHostedIntegrationId,
+} from '../../constants.integrations';
 import { HostingIntegrationId } from '../../constants.integrations';
 import type { Sources } from '../../constants.telemetry';
 import type { Container } from '../../container';
@@ -9,29 +14,25 @@ import { AuthenticationError, CancellationError, RequestClientError } from '../.
 import type { PagedResult } from '../../git/gitProvider';
 import type { Account, UnidentifiedAuthor } from '../../git/models/author';
 import type { DefaultBranch } from '../../git/models/defaultBranch';
-import type { Issue, IssueOrPullRequest, SearchedIssue } from '../../git/models/issue';
-import type {
-	PullRequest,
-	PullRequestMergeMethod,
-	PullRequestState,
-	SearchedPullRequest,
-} from '../../git/models/pullRequest';
-import type { PullRequestUrlIdentity } from '../../git/models/pullRequest.utils';
+import type { Issue, IssueShape } from '../../git/models/issue';
+import type { IssueOrPullRequest, IssueOrPullRequestType } from '../../git/models/issueOrPullRequest';
+import type { PullRequest, PullRequestMergeMethod, PullRequestState } from '../../git/models/pullRequest';
 import type { RepositoryMetadata } from '../../git/models/repositoryMetadata';
+import type { PullRequestUrlIdentity } from '../../git/utils/pullRequest.utils';
 import { showIntegrationDisconnectedTooManyFailedRequestsWarningMessage } from '../../messages';
-import { gate } from '../../system/decorators/gate';
+import { configuration } from '../../system/-webview/configuration';
+import { gate } from '../../system/decorators/-webview/gate';
 import { debug, log } from '../../system/decorators/log';
 import { first } from '../../system/iterable';
 import { Logger } from '../../system/logger';
 import type { LogScope } from '../../system/logger.scope';
 import { getLogScope } from '../../system/logger.scope';
-import { configuration } from '../../system/vscode/configuration';
-import { isSubscriptionStatePaidOrTrial } from '../gk/account/subscription';
+import { isSubscriptionStatePaidOrTrial } from '../gk/utils/subscription.utils';
 import type {
 	IntegrationAuthenticationProviderDescriptor,
-	IntegrationAuthenticationService,
 	IntegrationAuthenticationSessionDescriptor,
-} from './authentication/integrationAuthentication';
+} from './authentication/integrationAuthenticationProvider';
+import type { IntegrationAuthenticationService } from './authentication/integrationAuthenticationService';
 import type { ProviderAuthenticationSession } from './authentication/models';
 import type {
 	GetIssuesOptions,
@@ -54,6 +55,7 @@ export type IntegrationResult<T> =
 
 export type SupportedIntegrationIds = IntegrationId;
 export type SupportedHostingIntegrationIds = HostingIntegrationId;
+export type SupportedCloudSelfHostedIntegrationIds = CloudSelfHostedIntegrationId;
 export type SupportedIssueIntegrationIds = IssueIntegrationId;
 export type SupportedSelfHostedIntegrationIds = SelfHostedIntegrationId;
 
@@ -166,7 +168,9 @@ export abstract class IntegrationBase<
 	}
 
 	protected _session: ProviderAuthenticationSession | null | undefined;
-	getSession(source: Sources) {
+	getSession(
+		source: Sources,
+	): ProviderAuthenticationSession | Promise<ProviderAuthenticationSession | undefined> | undefined {
 		if (this._session === undefined) {
 			return this.ensureSession({ createIfNeeded: false, source: source });
 		}
@@ -255,7 +259,7 @@ export abstract class IntegrationBase<
 		void (await this.ensureSession({ createIfNeeded: true, forceNewSession: true }));
 	}
 
-	refresh() {
+	refresh(): void {
 		void this.ensureSession({ createIfNeeded: false });
 	}
 
@@ -409,16 +413,16 @@ export abstract class IntegrationBase<
 	async searchMyIssues(
 		resource?: ResourceDescriptor,
 		cancellation?: CancellationToken,
-	): Promise<SearchedIssue[] | undefined>;
+	): Promise<IssueShape[] | undefined>;
 	async searchMyIssues(
 		resources?: ResourceDescriptor[],
 		cancellation?: CancellationToken,
-	): Promise<SearchedIssue[] | undefined>;
+	): Promise<IssueShape[] | undefined>;
 	@debug()
 	async searchMyIssues(
 		resources?: ResourceDescriptor | ResourceDescriptor[],
 		cancellation?: CancellationToken,
-	): Promise<SearchedIssue[] | undefined> {
+	): Promise<IssueShape[] | undefined> {
 		const scope = getLogScope();
 		const connected = this.maybeConnected ?? (await this.isConnected());
 		if (!connected) return undefined;
@@ -432,7 +436,7 @@ export abstract class IntegrationBase<
 			this.resetRequestExceptionCount();
 			return issues;
 		} catch (ex) {
-			return this.handleProviderException<SearchedIssue[] | undefined>(ex, scope, undefined);
+			return this.handleProviderException<IssueShape[] | undefined>(ex, scope, undefined);
 		}
 	}
 
@@ -440,13 +444,13 @@ export abstract class IntegrationBase<
 		session: ProviderAuthenticationSession,
 		resources?: ResourceDescriptor[],
 		cancellation?: CancellationToken,
-	): Promise<SearchedIssue[] | undefined>;
+	): Promise<IssueShape[] | undefined>;
 
 	@debug()
 	async getIssueOrPullRequest(
 		resource: T,
 		id: string,
-		options?: { expiryOverride?: boolean | number },
+		options?: { expiryOverride?: boolean | number; type?: IssueOrPullRequestType },
 	): Promise<IssueOrPullRequest | undefined> {
 		const scope = getLogScope();
 
@@ -460,7 +464,12 @@ export abstract class IntegrationBase<
 			() => ({
 				value: (async () => {
 					try {
-						const result = await this.getProviderIssueOrPullRequest(this._session!, resource, id);
+						const result = await this.getProviderIssueOrPullRequest(
+							this._session!,
+							resource,
+							id,
+							options?.type,
+						);
 						this.resetRequestExceptionCount();
 						return result;
 					} catch (ex) {
@@ -477,6 +486,7 @@ export abstract class IntegrationBase<
 		session: ProviderAuthenticationSession,
 		resource: T,
 		id: string,
+		type: undefined | IssueOrPullRequestType,
 	): Promise<IssueOrPullRequest | undefined>;
 
 	@debug()
@@ -651,7 +661,7 @@ export abstract class IssueIntegration<
 	async getIssuesForProject(
 		project: T,
 		options?: { user?: string; filters?: IssueFilter[] },
-	): Promise<SearchedIssue[] | undefined> {
+	): Promise<IssueShape[] | undefined> {
 		const connected = this.maybeConnected ?? (await this.isConnected());
 		if (!connected) return undefined;
 
@@ -660,7 +670,7 @@ export abstract class IssueIntegration<
 			this.resetRequestExceptionCount();
 			return issues;
 		} catch (ex) {
-			return this.handleProviderException<SearchedIssue[] | undefined>(ex, undefined, undefined);
+			return this.handleProviderException<IssueShape[] | undefined>(ex, undefined, undefined);
 		}
 	}
 
@@ -668,7 +678,7 @@ export abstract class IssueIntegration<
 		session: ProviderAuthenticationSession,
 		project: T,
 		options?: { user?: string; filters?: IssueFilter[] },
-	): Promise<SearchedIssue[] | undefined>;
+	): Promise<IssueShape[] | undefined>;
 }
 
 export abstract class HostingIntegration<
@@ -1284,18 +1294,18 @@ export abstract class HostingIntegration<
 		repo?: T,
 		cancellation?: CancellationToken,
 		silent?: boolean,
-	): Promise<IntegrationResult<SearchedPullRequest[] | undefined>>;
+	): Promise<IntegrationResult<PullRequest[] | undefined>>;
 	async searchMyPullRequests(
 		repos?: T[],
 		cancellation?: CancellationToken,
 		silent?: boolean,
-	): Promise<IntegrationResult<SearchedPullRequest[] | undefined>>;
+	): Promise<IntegrationResult<PullRequest[] | undefined>>;
 	@debug()
 	async searchMyPullRequests(
 		repos?: T | T[],
 		cancellation?: CancellationToken,
 		silent?: boolean,
-	): Promise<IntegrationResult<SearchedPullRequest[] | undefined>> {
+	): Promise<IntegrationResult<PullRequest[] | undefined>> {
 		const scope = getLogScope();
 		const connected = this.maybeConnected ?? (await this.isConnected());
 		if (!connected) return undefined;
@@ -1320,7 +1330,7 @@ export abstract class HostingIntegration<
 		repos?: T[],
 		cancellation?: CancellationToken,
 		silent?: boolean,
-	): Promise<SearchedPullRequest[] | undefined>;
+	): Promise<PullRequest[] | undefined>;
 
 	async searchPullRequests(
 		searchQuery: string,

@@ -2,8 +2,8 @@ import { MarkdownString, ThemeIcon, TreeItem, TreeItemCollapsibleState } from 'v
 import { GlyphChars } from '../../constants';
 import { GitUri } from '../../git/gitUri';
 import type { GitRemote } from '../../git/models/remote';
-import { getRemoteUpstreamDescription } from '../../git/models/remote';
 import type { Repository } from '../../git/models/repository';
+import { getRemoteUpstreamDescription } from '../../git/utils/remote.utils';
 import { makeHierarchical } from '../../system/array';
 import { log } from '../../system/decorators/log';
 import type { ViewsWithRemotes } from '../viewBase';
@@ -130,7 +130,7 @@ export class RemoteNode extends ViewNode<'remote', ViewsWithRemotes> {
 		if (this.remote.default) {
 			item.contextValue += '+default';
 		}
-		item.resourceUri = createViewDecorationUri('remote', { default: this.remote.default });
+		item.resourceUri = createViewDecorationUri('remote', { state: this.remote.default ? 'default' : undefined });
 
 		for (const { type, url } of this.remote.urls) {
 			tooltip += `\\\n${url} (${type})`;
@@ -142,7 +142,7 @@ export class RemoteNode extends ViewNode<'remote', ViewsWithRemotes> {
 	}
 
 	@log()
-	async setAsDefault(state: boolean = true) {
+	async setAsDefault(state: boolean = true): Promise<void> {
 		await this.remote.setAsDefault(state);
 		void this.triggerChange();
 	}

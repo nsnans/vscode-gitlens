@@ -1,5 +1,5 @@
 import type { EntityIdentifier } from '@gitkraken/provider-apis';
-import { EntityIdentifierUtils } from '@gitkraken/provider-apis';
+import { EntityIdentifierUtils } from '@gitkraken/provider-apis/entity-identifiers';
 import type { Disposable } from 'vscode';
 import type { HeadersInit } from '@env/fetch';
 import { getAvatarUri } from '../../avatars';
@@ -8,9 +8,26 @@ import type { Container } from '../../container';
 import type { GitCommit } from '../../git/models/commit';
 import type { PullRequest } from '../../git/models/pullRequest';
 import { isRepository, Repository } from '../../git/models/repository';
-import { isSha, isUncommitted, shortenRevision } from '../../git/models/revision.utils';
+import type {
+	GkRepositoryId,
+	RepositoryIdentity,
+	RepositoryIdentityRequest,
+	RepositoryIdentityResponse,
+} from '../../git/models/repositoryIdentities';
 import type { GitUser } from '../../git/models/user';
 import { getRemoteProviderMatcher } from '../../git/remotes/remoteProviders';
+import { isSha, isUncommitted, shortenRevision } from '../../git/utils/revision.utils';
+import { log } from '../../system/decorators/log';
+import { Logger } from '../../system/logger';
+import type { LogScope } from '../../system/logger.scope';
+import { getLogScope } from '../../system/logger.scope';
+import { getSettledValue } from '../../system/promise';
+import type { OrganizationMember } from '../gk/models/organization';
+import type { SubscriptionAccount } from '../gk/models/subscription';
+import type { ServerConnection } from '../gk/serverConnection';
+import { providersMetadata, supportsCodeSuggest } from '../integrations/providers/models';
+import { getEntityIdentifierInput } from '../integrations/providers/utils';
+import type { LaunchpadItem } from '../launchpad/launchpadProvider';
 import type {
 	CodeSuggestionCounts,
 	CodeSuggestionCountsResponse,
@@ -32,24 +49,7 @@ import type {
 	DraftType,
 	DraftUser,
 	DraftVisibility,
-} from '../../gk/models/drafts';
-import type {
-	GkRepositoryId,
-	RepositoryIdentity,
-	RepositoryIdentityRequest,
-	RepositoryIdentityResponse,
-} from '../../gk/models/repositoryIdentities';
-import { log } from '../../system/decorators/log';
-import { Logger } from '../../system/logger';
-import type { LogScope } from '../../system/logger.scope';
-import { getLogScope } from '../../system/logger.scope';
-import { getSettledValue } from '../../system/promise';
-import type { OrganizationMember } from '../gk/account/organization';
-import type { SubscriptionAccount } from '../gk/account/subscription';
-import type { ServerConnection } from '../gk/serverConnection';
-import { providersMetadata } from '../integrations/providers/models';
-import { getEntityIdentifierInput } from '../integrations/providers/utils';
-import type { LaunchpadItem } from '../launchpad/launchpadProvider';
+} from './models/drafts';
 
 export interface ProviderAuth {
 	provider: IntegrationId;
@@ -176,7 +176,7 @@ export class DraftService implements Disposable {
 					throw new Error(`No contents found for ${patch.baseCommitSha}`);
 				}
 
-				const diffFiles = await this.container.git.getDiffFiles(repository.path, contents);
+				const diffFiles = await repository.git.diff().getDiffFiles?.(contents);
 				const files = diffFiles?.files.map(f => ({ ...f, gkRepositoryId: patch.gitRepositoryId })) ?? [];
 
 				// Upload patch to returned S3 url
@@ -257,13 +257,13 @@ export class DraftService implements Disposable {
 						.branches()
 						.getBranch()
 						.then(b => (b != null ? [b.name] : undefined))
-				: change.repository.git.branches().getBranchesForCommit([change.revision.to, change.revision.from]),
+				: change.repository.git.branches().getBranchesWithCommits([change.revision.to, change.revision.from]),
 			change.contents == null
-				? change.repository.git.getDiff(change.revision.to, change.revision.from)
+				? change.repository.git.diff().getDiff?.(change.revision.to, change.revision.from)
 				: undefined,
-			change.repository.git.getFirstCommitSha(),
+			change.repository.git.commits().getInitialCommitSha?.(),
 			change.repository.git.remotes().getBestRemoteWithProvider(),
-			change.repository.git.getCurrentUser(),
+			change.repository.git.config().getCurrentUser(),
 		]);
 
 		const firstSha = getSettledValue(firstShaResult);
@@ -301,7 +301,7 @@ export class DraftService implements Disposable {
 
 		let baseSha = change.revision.from;
 		if (!isSha(baseSha)) {
-			const commit = await this.container.git.getCommit(change.repository.uri, baseSha);
+			const commit = await this.container.git.commits(change.repository.uri).getCommit(baseSha);
 			if (commit != null) {
 				baseSha = commit.sha;
 			} else {
@@ -453,20 +453,13 @@ export class DraftService implements Disposable {
 
 		let headers;
 		if (options?.providerAuth) {
-			headers = {
-				'Provider-Auth': Buffer.from(JSON.stringify(options.providerAuth)).toString('base64'),
-			};
+			headers = { 'Provider-Auth': Buffer.from(JSON.stringify(options.providerAuth)).toString('base64') };
 		}
 
 		const rsp = await this.connection.fetchGkApi(
 			'/v1/drafts',
-			{
-				method: 'GET',
-				headers: headers,
-			},
-			{
-				query: queryStrings.length ? queryStrings.join('&') : undefined,
-			},
+			{ method: 'GET', headers: headers },
+			{ query: queryStrings.length ? queryStrings.join('&') : undefined },
 		);
 
 		if (!rsp.ok) {
@@ -474,6 +467,8 @@ export class DraftService implements Disposable {
 		}
 
 		const drafts = ((await rsp.json()) as Result).data;
+
+		if (drafts.length === 0) return [];
 
 		const [subscriptionResult, membersResult] = await Promise.allSettled([
 			this.container.subscription.getSubscription(),
@@ -575,7 +570,7 @@ export class DraftService implements Disposable {
 			repoPath = repositoryOrIdentity.path;
 		}
 
-		const diffFiles = await this.container.git.getDiffFiles(repoPath, contents);
+		const diffFiles = await this.container.git.diff(repoPath).getDiffFiles?.(contents);
 		const files = diffFiles?.files.map(f => ({ ...f, gkRepositoryId: patch.gkRepositoryId })) ?? [];
 
 		return {
@@ -729,7 +724,7 @@ export class DraftService implements Disposable {
 		} else if (data.provider?.repoName != null) {
 			name = data.provider.repoName;
 		} else if (data.remote?.url != null && data.remote?.domain != null && data.remote?.path != null) {
-			const matcher = getRemoteProviderMatcher(this.container);
+			const matcher = await getRemoteProviderMatcher(this.container);
 			const provider = matcher(data.remote.url, data.remote.domain, data.remote.path);
 			name = provider?.repoName ?? data.remote.path;
 		} else {
@@ -830,6 +825,8 @@ export class DraftService implements Disposable {
 		repositoryOrIntegrationId: Repository | IntegrationId,
 		options?: { includeArchived?: boolean },
 	): Promise<Draft[]> {
+		if (!supportsCodeSuggest(item.provider)) return [];
+
 		const entityIdentifier = getEntityIdentifierInput(item);
 		const prEntityId = EntityIdentifierUtils.encode(entityIdentifier);
 		const providerAuth = await this.getProviderAuthFromRepoOrIntegrationId(repositoryOrIntegrationId);
@@ -853,9 +850,11 @@ export class DraftService implements Disposable {
 
 		type Result = { data: CodeSuggestionCountsResponse };
 
-		const prEntityIds = pullRequests.map(pr => {
-			return EntityIdentifierUtils.encode(getEntityIdentifierInput(pr));
-		});
+		const prEntityIds = pullRequests
+			.filter(pr => supportsCodeSuggest(pr.provider))
+			.map(pr => {
+				return EntityIdentifierUtils.encode(getEntityIdentifierInput(pr));
+			});
 
 		const body = JSON.stringify({
 			prEntityIds: prEntityIds,
@@ -864,13 +863,8 @@ export class DraftService implements Disposable {
 		try {
 			const rsp = await this.connection.fetchGkApi(
 				'v1/drafts/counts',
-				{
-					method: 'POST',
-					body: body,
-				},
-				{
-					query: 'type=suggested_pr_change',
-				},
+				{ method: 'POST', body: body },
+				{ query: 'type=suggested_pr_change' },
 			);
 
 			if (!rsp.ok) {
@@ -890,7 +884,7 @@ export class DraftService implements Disposable {
 	generateWebUrl(draft: Draft): string;
 	generateWebUrl(draftOrDraftId: Draft | string): string {
 		const id = typeof draftOrDraftId === 'string' ? draftOrDraftId : draftOrDraftId.id;
-		return this.container.generateWebGkDevUrl(`/drafts/${id}`);
+		return this.container.urls.getGkDevUrl(['drafts', id]);
 	}
 }
 

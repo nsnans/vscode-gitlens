@@ -2,6 +2,7 @@ import slug from 'slug';
 import type { QuickInputButton, QuickPick, QuickPickItem } from 'vscode';
 import { Uri } from 'vscode';
 import { md5 } from '@env/crypto';
+import type { ManageCloudIntegrationsCommandArgs } from '../../commands/cloudIntegrations';
 import type {
 	AsyncStepResultGenerator,
 	PartialStepState,
@@ -19,37 +20,37 @@ import {
 } from '../../commands/quickCommand';
 import {
 	ConnectIntegrationButton,
+	OpenOnAzureDevOpsQuickInputButton,
 	OpenOnGitHubQuickInputButton,
 	OpenOnGitLabQuickInputButton,
 	OpenOnJiraQuickInputButton,
 } from '../../commands/quickCommand.buttons';
 import { getSteps } from '../../commands/quickWizard.utils';
 import { proBadge } from '../../constants';
-import { GlCommand } from '../../constants.commands';
 import type { IntegrationId } from '../../constants.integrations';
-import { HostingIntegrationId, IssueIntegrationId } from '../../constants.integrations';
+import { HostingIntegrationId, IssueIntegrationId, SelfHostedIntegrationId } from '../../constants.integrations';
 import type { Source, Sources, StartWorkTelemetryContext, TelemetryEvents } from '../../constants.telemetry';
 import type { Container } from '../../container';
-import { addAssociatedIssueToBranch } from '../../git/models/branch.utils';
-import type { Issue, IssueShape, SearchedIssue } from '../../git/models/issue';
-import { getOrOpenIssueRepository } from '../../git/models/issue';
+import type { Issue, IssueShape } from '../../git/models/issue';
 import type { GitBranchReference } from '../../git/models/reference';
 import type { Repository } from '../../git/models/repository';
+import { addAssociatedIssueToBranch } from '../../git/utils/-webview/branch.issue.utils';
+import { getOrOpenIssueRepository } from '../../git/utils/-webview/issue.utils';
 import { showBranchPicker } from '../../quickpicks/branchPicker';
 import type { QuickPickItemOfT } from '../../quickpicks/items/common';
 import { createQuickPickItemOfT } from '../../quickpicks/items/common';
 import type { DirectiveQuickPickItem } from '../../quickpicks/items/directive';
 import { createDirectiveQuickPickItem, Directive } from '../../quickpicks/items/directive';
+import { executeCommand } from '../../system/-webview/command';
+import { configuration } from '../../system/-webview/configuration';
+import { openUrl } from '../../system/-webview/vscode';
 import { getScopedCounter } from '../../system/counter';
 import { fromNow } from '../../system/date';
 import { some } from '../../system/iterable';
-import { executeCommand } from '../../system/vscode/command';
-import { configuration } from '../../system/vscode/configuration';
-import { openUrl } from '../../system/vscode/utils';
 import { getIssueOwner } from '../integrations/providers/utils';
 
 export type StartWorkItem = {
-	item: SearchedIssue;
+	issue: IssueShape;
 };
 
 export type StartWorkResult = { items: StartWorkItem[] };
@@ -91,7 +92,10 @@ export interface StartWorkOverrides {
 
 export const supportedStartWorkIntegrations = [
 	HostingIntegrationId.GitHub,
+	SelfHostedIntegrationId.CloudGitHubEnterprise,
 	HostingIntegrationId.GitLab,
+	SelfHostedIntegrationId.CloudGitLabSelfHosted,
+	HostingIntegrationId.AzureDevOps,
 	IssueIntegrationId.Jira,
 ];
 export type SupportedStartWorkIntegrationIds = (typeof supportedStartWorkIntegrations)[number];
@@ -306,7 +310,7 @@ export abstract class StartWorkBaseCommand extends QuickCommand<State> {
 			const resume = step.freeze?.();
 			const chosenIntegrationId = selection[0].item;
 			const connected = await this.ensureIntegrationConnected(chosenIntegrationId);
-			return { connected: connected ? chosenIntegrationId : false, resume: () => resume?.[Symbol.dispose]() };
+			return { connected: connected ? chosenIntegrationId : false, resume: () => resume?.dispose() };
 		}
 
 		return StepResultBreak;
@@ -314,6 +318,8 @@ export abstract class StartWorkBaseCommand extends QuickCommand<State> {
 
 	private async ensureIntegrationConnected(id: IntegrationId) {
 		const integration = await this.container.integrations.get(id);
+		if (integration == null) return false;
+
 		let connected = integration.maybeConnected ?? (await integration.isConnected());
 		if (!connected) {
 			connected = await integration.connect(this.overrides?.ownSource ?? 'startWork');
@@ -383,7 +389,7 @@ export abstract class StartWorkBaseCommand extends QuickCommand<State> {
 			if (step.quickpick) {
 				step.quickpick.placeholder = previousPlaceholder;
 			}
-			return { connected: connected, resume: () => resume?.[Symbol.dispose]() };
+			return { connected: connected, resume: () => resume?.dispose() };
 		}
 
 		return StepResultBreak;
@@ -396,20 +402,19 @@ export abstract class StartWorkBaseCommand extends QuickCommand<State> {
 		const hasDisconnectedIntegrations = [...context.connectedIntegrations.values()].some(c => !c);
 
 		const buildStartWorkQuickPickItem = (i: StartWorkItem) => {
-			const onWebButton = i.item.issue.url ? getOpenOnWebQuickInputButton(i.item.issue.provider.id) : undefined;
+			const onWebButton = i.issue.url ? getOpenOnWebQuickInputButton(i.issue.provider.id) : undefined;
 			const buttons = onWebButton ? [onWebButton] : [];
-			const hoverContent = i.item.issue.body ? `${repeatSpaces(200)}\n\n${i.item.issue.body}` : '';
+			const hoverContent = i.issue.body ? `${repeatSpaces(200)}\n\n${i.issue.body}` : '';
 			return {
-				label:
-					i.item.issue.title.length > 60 ? `${i.item.issue.title.substring(0, 60)}...` : i.item.issue.title,
+				label: i.issue.title.length > 60 ? `${i.issue.title.substring(0, 60)}...` : i.issue.title,
 				description: `\u00a0 ${
-					i.item.issue.repository ? `${i.item.issue.repository.owner}/${i.item.issue.repository.repo}#` : ''
-				}${i.item.issue.id} \u00a0`,
+					i.issue.repository ? `${i.issue.repository.owner}/${i.issue.repository.repo}#` : ''
+				}${i.issue.id} \u00a0`,
 				// The spacing here at the beginning is used to align the description with the title. Otherwise it starts under the avatar icon:
-				detail: `      ${fromNow(i.item.issue.updatedDate)} by @${i.item.issue.author.name}${hoverContent}`,
-				iconPath: i.item.issue.author?.avatarUrl != null ? Uri.parse(i.item.issue.author.avatarUrl) : undefined,
+				detail: `      ${fromNow(i.issue.updatedDate)} by @${i.issue.author.name}${hoverContent}`,
+				iconPath: i.issue.author?.avatarUrl != null ? Uri.parse(i.issue.author.avatarUrl) : undefined,
 				item: i,
-				picked: i.item.issue.id === state.item?.item?.issue.id,
+				picked: i.issue.id === state.item?.issue.id,
 				buttons: buttons,
 			};
 		};
@@ -477,6 +482,7 @@ export abstract class StartWorkBaseCommand extends QuickCommand<State> {
 			},
 			onDidClickItemButton: (_quickpick, button, { item }) => {
 				switch (button) {
+					case OpenOnAzureDevOpsQuickInputButton:
 					case OpenOnGitHubQuickInputButton:
 					case OpenOnGitLabQuickInputButton:
 					case OpenOnJiraQuickInputButton:
@@ -507,7 +513,9 @@ export abstract class StartWorkBaseCommand extends QuickCommand<State> {
 			return StepResultBreak;
 		} else if (isManageIntegrationsItem(element)) {
 			this.sendActionTelemetry('manage', context);
-			executeCommand(GlCommand.PlusManageCloudIntegrations, { source: this.overrides?.ownSource ?? 'startWork' });
+			executeCommand<ManageCloudIntegrationsCommandArgs>('gitlens.plus.cloudIntegrations.manage', {
+				source: { source: this.overrides?.ownSource ?? 'startWork' },
+			});
 			endSteps(state);
 			return StepResultBreak;
 		}
@@ -516,8 +524,8 @@ export abstract class StartWorkBaseCommand extends QuickCommand<State> {
 	}
 
 	private open(item: StartWorkItem): void {
-		if (item.item.issue.url == null) return;
-		void openUrl(item.item.issue.url);
+		if (item.issue.url == null) return;
+		void openUrl(item.issue.url);
 	}
 
 	private sendItemActionTelemetry(action: 'soft-open', item: StartWorkItem, context: Context) {
@@ -562,7 +570,7 @@ export class StartWorkCommand extends StartWorkBaseCommand {
 		state: StartWorkStepState,
 		_context: Context,
 	): AsyncStepResultGenerator<void> {
-		const issue = state.item.item.issue;
+		const issue = state.item.issue;
 		const repo = issue && (await this.getIssueRepositoryIfExists(issue));
 
 		const result = yield* getSteps(
@@ -630,7 +638,7 @@ export class AssociateIssueWithBranchCommand extends StartWorkBaseCommand {
 			return;
 		}
 
-		const issue = state.item.item.issue;
+		const issue = state.item.issue;
 
 		if (this.branch == null) {
 			this.branch = await showBranchPicker(
@@ -664,7 +672,7 @@ async function updateContextItems(container: Container, context: Context) {
 		items:
 			(await container.integrations.getMyIssues(connectedIntegrations, { openRepositoriesOnly: true }))?.map(
 				i => ({
-					item: i,
+					issue: i,
 				}),
 			) ?? [],
 	};
@@ -684,31 +692,35 @@ function repeatSpaces(count: number) {
 	return ' '.repeat(count);
 }
 
-export function getStartWorkItemIdHash(item: StartWorkItem) {
-	return md5(item.item.issue.id);
+export function getStartWorkItemIdHash(item: StartWorkItem): string {
+	return md5(item.issue.id);
 }
 
 function buildItemTelemetryData(item: StartWorkItem) {
 	return {
 		'item.id': getStartWorkItemIdHash(item),
-		'item.type': item.item.issue.type,
-		'item.provider': item.item.issue.provider.id,
-		'item.assignees.count': item.item.issue.assignees?.length ?? undefined,
-		'item.createdDate': item.item.issue.createdDate.getTime(),
-		'item.updatedDate': item.item.issue.updatedDate.getTime(),
+		'item.type': item.issue.type,
+		'item.provider': item.issue.provider.id,
+		'item.assignees.count': item.issue.assignees?.length ?? undefined,
+		'item.createdDate': item.issue.createdDate.getTime(),
+		'item.updatedDate': item.issue.updatedDate.getTime(),
 
-		'item.comments.count': item.item.issue.commentsCount ?? undefined,
-		'item.upvotes.count': item.item.issue.thumbsUpCount ?? undefined,
+		'item.comments.count': item.issue.commentsCount ?? undefined,
+		'item.upvotes.count': item.issue.thumbsUpCount ?? undefined,
 
-		'item.issue.state': item.item.issue.state,
+		'item.issue.state': item.issue.state,
 	};
 }
 
 function getOpenOnWebQuickInputButton(integrationId: string): QuickInputButton | undefined {
 	switch (integrationId) {
+		case HostingIntegrationId.AzureDevOps:
+			return OpenOnAzureDevOpsQuickInputButton;
 		case HostingIntegrationId.GitHub:
+		case SelfHostedIntegrationId.CloudGitHubEnterprise:
 			return OpenOnGitHubQuickInputButton;
 		case HostingIntegrationId.GitLab:
+		case SelfHostedIntegrationId.CloudGitLabSelfHosted:
 			return OpenOnGitLabQuickInputButton;
 		case IssueIntegrationId.Jira:
 			return OpenOnJiraQuickInputButton;
@@ -722,6 +734,10 @@ async function getConnectedIntegrations(container: Container): Promise<Map<Suppo
 	await Promise.allSettled(
 		supportedStartWorkIntegrations.map(async integrationId => {
 			const integration = await container.integrations.get(integrationId);
+			if (integration == null) {
+				connected.set(integrationId, false);
+				return;
+			}
 			const isConnected = integration.maybeConnected ?? (await integration.isConnected());
 			const hasAccess = isConnected && (await integration.access());
 			connected.set(integrationId, hasAccess);

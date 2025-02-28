@@ -5,28 +5,21 @@ import type { Sources } from '../../../constants.telemetry';
 import type { Container } from '../../../container';
 import type { Account } from '../../../git/models/author';
 import type { DefaultBranch } from '../../../git/models/defaultBranch';
-import type { Issue, IssueOrPullRequest, SearchedIssue } from '../../../git/models/issue';
-import type {
-	PullRequest,
-	PullRequestMergeMethod,
-	PullRequestState,
-	SearchedPullRequest,
-} from '../../../git/models/pullRequest';
-import type { PullRequestUrlIdentity } from '../../../git/models/pullRequest.utils';
+import type { Issue, IssueShape } from '../../../git/models/issue';
+import type { IssueOrPullRequest } from '../../../git/models/issueOrPullRequest';
+import type { PullRequest, PullRequestMergeMethod, PullRequestState } from '../../../git/models/pullRequest';
 import type { RepositoryMetadata } from '../../../git/models/repositoryMetadata';
+import type { PullRequestUrlIdentity } from '../../../git/utils/pullRequest.utils';
 import { log } from '../../../system/decorators/log';
 import { uniqueBy } from '../../../system/iterable';
-import { ensurePaidPlan } from '../../utils';
-import type {
-	IntegrationAuthenticationProviderDescriptor,
-	IntegrationAuthenticationService,
-} from '../authentication/integrationAuthentication';
+import { ensurePaidPlan } from '../../gk/utils/-webview/plus.utils';
+import type { IntegrationAuthenticationProviderDescriptor } from '../authentication/integrationAuthenticationProvider';
+import type { IntegrationAuthenticationService } from '../authentication/integrationAuthenticationService';
 import type { RepositoryDescriptor } from '../integration';
 import { HostingIntegration } from '../integration';
 import { getGitLabPullRequestIdentityFromMaybeUrl } from './gitlab/gitlab.utils';
 import { fromGitLabMergeRequestProvidersApi } from './gitlab/models';
-import type { ProviderPullRequest } from './models';
-import { ProviderPullRequestReviewState, providersMetadata, toSearchedIssue } from './models';
+import { ProviderPullRequestReviewState, providersMetadata, toIssueShape } from './models';
 import type { ProvidersApi } from './providersApi';
 
 const metadata = providersMetadata[HostingIntegrationId.GitLab];
@@ -40,11 +33,19 @@ const enterpriseAuthProvider: IntegrationAuthenticationProviderDescriptor = Obje
 	id: enterpriseMetadata.id,
 	scopes: enterpriseMetadata.scopes,
 });
+const cloudEnterpriseMetadata = providersMetadata[SelfHostedIntegrationId.CloudGitLabSelfHosted];
+const cloudEnterpriseAuthProvider: IntegrationAuthenticationProviderDescriptor = Object.freeze({
+	id: cloudEnterpriseMetadata.id,
+	scopes: cloudEnterpriseMetadata.scopes,
+});
 
 export type GitLabRepositoryDescriptor = RepositoryDescriptor;
 
 abstract class GitLabIntegrationBase<
-	ID extends HostingIntegrationId.GitLab | SelfHostedIntegrationId.GitLabSelfHosted,
+	ID extends
+		| HostingIntegrationId.GitLab
+		| SelfHostedIntegrationId.GitLabSelfHosted
+		| SelfHostedIntegrationId.CloudGitLabSelfHosted,
 > extends HostingIntegration<ID, GitLabRepositoryDescriptor> {
 	protected abstract get apiBaseUrl(): string;
 
@@ -109,6 +110,9 @@ abstract class GitLabIntegrationBase<
 	): Promise<Issue | undefined> {
 		const api = await this.container.gitlab;
 		const providerApi = await this.getProvidersApi();
+		const isEnterprise =
+			this.id === SelfHostedIntegrationId.GitLabSelfHosted ||
+			this.id === SelfHostedIntegrationId.CloudGitLabSelfHosted;
 
 		if (!api || !repo || !id) {
 			return undefined;
@@ -122,9 +126,13 @@ abstract class GitLabIntegrationBase<
 		const apiResult = await providerApi.getIssue(
 			this.id,
 			{ namespace: repo.owner, name: repo.name, number: id },
-			{ accessToken: accessToken },
+			{
+				accessToken: accessToken,
+				isPAT: isEnterprise,
+				baseUrl: isEnterprise ? `https://${this.domain}` : undefined,
+			},
 		);
-		const issue = apiResult != null ? toSearchedIssue(apiResult, this)?.issue : undefined;
+		const issue = apiResult != null ? toIssueShape(apiResult, this) : undefined;
 		return issue != null ? { ...issue, type: 'issue' } : undefined;
 	}
 
@@ -202,14 +210,19 @@ abstract class GitLabIntegrationBase<
 	protected override async searchProviderMyPullRequests(
 		{ accessToken }: AuthenticationSession,
 		repos?: GitLabRepositoryDescriptor[],
-	): Promise<SearchedPullRequest[] | undefined> {
+	): Promise<PullRequest[] | undefined> {
 		const api = await this.getProvidersApi();
+		const isEnterprise =
+			this.id === SelfHostedIntegrationId.GitLabSelfHosted ||
+			this.id === SelfHostedIntegrationId.CloudGitLabSelfHosted;
 		const username = (await this.getCurrentAccount())?.username;
 		if (!username) {
 			return Promise.resolve([]);
 		}
 		const apiResult = await api.getPullRequestsForUser(this.id, username, {
 			accessToken: accessToken,
+			isPAT: isEnterprise,
+			baseUrl: isEnterprise ? `https://${this.domain}` : undefined,
 		});
 
 		if (apiResult == null) {
@@ -231,66 +244,40 @@ abstract class GitLabIntegrationBase<
 			prs = apiResult.values;
 		}
 
-		const toQueryResult = (pr: ProviderPullRequest, reason?: string): SearchedPullRequest => {
-			return {
-				pullRequest: fromGitLabMergeRequestProvidersApi(pr, this),
-				reasons: reason ? [reason] : [],
-			};
-		};
-
-		function uniqueWithReasons<T extends { reasons: string[] }>(items: T[], lookup: (item: T) => unknown): T[] {
-			return [
-				...uniqueBy(items, lookup, (original, current) => {
-					if (current.reasons.length !== 0) {
-						original.reasons.push(...current.reasons);
-					}
-					return original;
-				}),
-			];
-		}
-
-		const results: SearchedPullRequest[] = uniqueWithReasons(
+		const results: IterableIterator<PullRequest> = uniqueBy(
 			[
-				...prs.flatMap(pr => {
-					const result: SearchedPullRequest[] = [];
-					if (pr.assignees?.some(a => a.username === username)) {
-						result.push(toQueryResult(pr, 'assigned'));
-					}
-
-					if (
-						pr.reviews?.some(
+				...prs
+					.filter(pr => {
+						const isAssignee = pr.assignees?.some(a => a.username === username);
+						const isRequestedReviewer = pr.reviews?.some(
 							review =>
 								review.reviewer?.username === username ||
 								review.state === ProviderPullRequestReviewState.ReviewRequested,
-						)
-					) {
-						result.push(toQueryResult(pr, 'review-requested'));
-					}
+						);
+						const isAuthor = pr.author?.username === username;
+						// It seems like GitLab doesn't give us mentioned PRs.
+						// const isMentioned = ???;
 
-					if (pr.author?.username === username) {
-						result.push(toQueryResult(pr, 'authored'));
-					}
-
-					// It seems like GitLab doesn't give us mentioned PRs.
-					// if (???) {
-					// 	return toQueryResult(pr, 'mentioned');
-					// }
-
-					return result;
-				}),
+						return isAssignee || isRequestedReviewer || isAuthor;
+					})
+					.map(pr => fromGitLabMergeRequestProvidersApi(pr, this)),
 			],
-			r => r.pullRequest.url,
+			r => r.url,
+			(original, _current) => original,
 		);
 
-		return results;
+		return [...results];
 	}
 
 	protected override async searchProviderMyIssues(
 		{ accessToken }: AuthenticationSession,
 		repos?: GitLabRepositoryDescriptor[],
-	): Promise<SearchedIssue[] | undefined> {
+	): Promise<IssueShape[] | undefined> {
 		const api = await this.container.gitlab;
 		const providerApi = await this.getProvidersApi();
+		const isEnterprise =
+			this.id === SelfHostedIntegrationId.GitLabSelfHosted ||
+			this.id === SelfHostedIntegrationId.CloudGitLabSelfHosted;
 
 		if (!api || !repos) {
 			return undefined;
@@ -307,11 +294,13 @@ abstract class GitLabIntegrationBase<
 			.filter((r): r is string => r != null);
 		const apiResult = await providerApi.getIssuesForRepos(this.id, repoInput, {
 			accessToken: accessToken,
+			isPAT: isEnterprise,
+			baseUrl: isEnterprise ? `https://${this.domain}` : undefined,
 		});
 
 		return apiResult.values
-			.map(issue => toSearchedIssue(issue, this))
-			.filter((result): result is SearchedIssue => result != null);
+			.map(issue => toIssueShape(issue, this))
+			.filter((result): result is IssueShape => result != null);
 	}
 
 	protected override async searchProviderPullRequests(
@@ -338,7 +327,7 @@ abstract class GitLabIntegrationBase<
 	}
 
 	protected override async mergeProviderPullRequest(
-		_session: AuthenticationSession,
+		{ accessToken }: AuthenticationSession,
 		pr: PullRequest,
 		options?: {
 			mergeMethod?: PullRequestMergeMethod;
@@ -346,8 +335,16 @@ abstract class GitLabIntegrationBase<
 	): Promise<boolean> {
 		if (!this.isPullRequest(pr)) return false;
 		const api = await this.getProvidersApi();
+		const isEnterprise =
+			this.id === SelfHostedIntegrationId.GitLabSelfHosted ||
+			this.id === SelfHostedIntegrationId.CloudGitLabSelfHosted;
 		try {
-			const res = await api.mergePullRequest(this.id, pr, options);
+			const res = await api.mergePullRequest(this.id, pr, {
+				...options,
+				isPAT: isEnterprise,
+				baseUrl: isEnterprise ? `https://${this.domain}` : undefined,
+				accessToken: accessToken,
+			});
 			return res;
 		} catch (ex) {
 			void this.showMergeErrorMessage(ex);
@@ -378,7 +375,14 @@ abstract class GitLabIntegrationBase<
 		accessToken,
 	}: AuthenticationSession): Promise<Account | undefined> {
 		const api = await this.getProvidersApi();
-		const currentUser = await api.getCurrentUser(this.id, { accessToken: accessToken });
+		const isEnterprise =
+			this.id === SelfHostedIntegrationId.GitLabSelfHosted ||
+			this.id === SelfHostedIntegrationId.CloudGitLabSelfHosted;
+		const currentUser = await api.getCurrentUser(this.id, {
+			accessToken: accessToken,
+			isPAT: isEnterprise,
+			baseUrl: isEnterprise ? `https://${this.domain}` : undefined,
+		});
 		if (currentUser == null) return undefined;
 
 		return {
@@ -420,10 +424,11 @@ export class GitLabIntegration extends GitLabIntegrationBase<HostingIntegrationI
 	}
 }
 
-export class GitLabSelfHostedIntegration extends GitLabIntegrationBase<SelfHostedIntegrationId.GitLabSelfHosted> {
+export class GitLabSelfHostedIntegration extends GitLabIntegrationBase<
+	SelfHostedIntegrationId.GitLabSelfHosted | SelfHostedIntegrationId.CloudGitLabSelfHosted
+> {
 	readonly authProvider = enterpriseAuthProvider;
-	readonly id = SelfHostedIntegrationId.GitLabSelfHosted;
-	protected readonly key = `${this.id}:${this.domain}` as const;
+	protected readonly key;
 	readonly name = 'GitLab Self-Hosted';
 	get domain(): string {
 		return this._domain;
@@ -437,8 +442,12 @@ export class GitLabSelfHostedIntegration extends GitLabIntegrationBase<SelfHoste
 		authenticationService: IntegrationAuthenticationService,
 		getProvidersApi: () => Promise<ProvidersApi>,
 		private readonly _domain: string,
+		readonly id: SelfHostedIntegrationId.GitLabSelfHosted | SelfHostedIntegrationId.CloudGitLabSelfHosted,
 	) {
 		super(container, authenticationService, getProvidersApi);
+		this.key = `${this.id}:${this.domain}` as const;
+		this.authProvider =
+			this.id === SelfHostedIntegrationId.GitLabSelfHosted ? enterpriseAuthProvider : cloudEnterpriseAuthProvider;
 	}
 
 	@log()

@@ -1,4 +1,4 @@
-import type { GitFileChange } from './file';
+import type { GitFileChange } from './fileChange';
 
 export interface GitDiff {
 	readonly contents: string;
@@ -43,6 +43,12 @@ export interface GitDiffShortStat {
 
 export interface GitDiffFiles {
 	readonly files: GitFileChange[];
+}
+
+export interface GitDiffFileStats {
+	readonly added: number;
+	readonly deleted: number;
+	readonly changed: number;
 }
 
 export type GitDiffFilter = 'A' | 'C' | 'D' | 'M' | 'R' | 'T' | 'U' | 'X' | 'B' | '*';

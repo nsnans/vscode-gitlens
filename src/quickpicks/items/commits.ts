@@ -10,9 +10,11 @@ import { browseAtRevision } from '../../git/actions';
 import * as CommitActions from '../../git/actions/commit';
 import { CommitFormatter } from '../../git/formatters/commitFormatter';
 import type { GitCommit } from '../../git/models/commit';
-import type { GitFile, GitFileChange } from '../../git/models/file';
-import { getGitFileFormattedDirectory, getGitFileStatusThemeIcon } from '../../git/models/file';
-import type { GitStatusFile } from '../../git/models/status';
+import type { GitFile } from '../../git/models/file';
+import type { GitFileChange } from '../../git/models/fileChange';
+import type { GitStatusFile } from '../../git/models/statusFile';
+import { getGitFileFormattedDirectory } from '../../git/utils/-webview/file.utils';
+import { getGitFileStatusThemeIcon } from '../../git/utils/-webview/icons';
 import { basename } from '../../system/path';
 import { pad } from '../../system/string';
 import type { CompareResultsNode } from '../../views/nodes/compareResultsNode';
@@ -186,7 +188,7 @@ export class CommitOpenAllChangesCommandQuickPickItem extends CommandQuickPickIt
 	}
 
 	override execute(options: { preserveFocus?: boolean; preview?: boolean }): Promise<void> {
-		return CommitActions.openAllChanges(this.commit, options);
+		return CommitActions.openCommitChanges(Container.instance, this.commit, undefined, options);
 	}
 }
 
@@ -196,7 +198,7 @@ export class CommitOpenAllChangesWithDiffToolCommandQuickPickItem extends Comman
 	}
 
 	override execute(): Promise<void> {
-		return CommitActions.openAllChangesWithDiffTool(this.commit);
+		return CommitActions.openCommitChangesInDiffTool(this.commit);
 	}
 }
 
@@ -206,7 +208,7 @@ export class CommitOpenAllChangesWithWorkingCommandQuickPickItem extends Command
 	}
 
 	override execute(options: { preserveFocus?: boolean; preview?: boolean }): Promise<void> {
-		return CommitActions.openAllChangesWithWorking(this.commit, options);
+		return CommitActions.openCommitChangesWithWorking(Container.instance, this.commit, undefined, options);
 	}
 }
 
@@ -232,7 +234,7 @@ export class CommitOpenChangesWithDiffToolCommandQuickPickItem extends CommandQu
 	}
 
 	override execute(): Promise<void> {
-		return CommitActions.openChangesWithDiffTool(this.file, this.commit);
+		return CommitActions.openChangesInDiffTool(this.file, this.commit);
 	}
 }
 

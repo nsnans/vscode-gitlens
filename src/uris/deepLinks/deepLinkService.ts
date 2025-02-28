@@ -6,28 +6,29 @@ import type { Container } from '../../container';
 import { executeGitCommand } from '../../git/actions';
 import { openComparisonChanges, openFileAtRevision } from '../../git/actions/commit';
 import type { GitBranch } from '../../git/models/branch';
-import { getBranchNameWithoutRemote } from '../../git/models/branch.utils';
 import type { GitCommit } from '../../git/models/commit';
 import type { GitReference } from '../../git/models/reference';
-import { createReference } from '../../git/models/reference.utils';
 import type { Repository, RepositoryChangeEvent } from '../../git/models/repository';
 import { RepositoryChange, RepositoryChangeComparisonMode } from '../../git/models/repository';
-import { isSha } from '../../git/models/revision.utils';
+import type { RepositoryIdentity } from '../../git/models/repositoryIdentities';
+import { missingRepositoryId } from '../../git/models/repositoryIdentities';
 import type { GitTag } from '../../git/models/tag';
 import { parseGitRemoteUrl } from '../../git/parsers/remoteParser';
-import type { RepositoryIdentity } from '../../gk/models/repositoryIdentities';
-import { missingRepositoryId } from '../../gk/models/repositoryIdentities';
-import { ensureAccount, ensurePaidPlan } from '../../plus/utils';
+import { getBranchNameWithoutRemote } from '../../git/utils/branch.utils';
+import { createReference } from '../../git/utils/reference.utils';
+import { isSha } from '../../git/utils/revision.utils';
+import { ensureAccount } from '../../plus/gk/utils/-webview/acount.utils';
+import { ensurePaidPlan } from '../../plus/gk/utils/-webview/plus.utils';
 import { createQuickPickSeparator } from '../../quickpicks/items/common';
+import { executeCommand } from '../../system/-webview/command';
+import { configuration } from '../../system/-webview/configuration';
+import type { OpenWorkspaceLocation } from '../../system/-webview/vscode';
+import { findOrOpenEditor, openWorkspace } from '../../system/-webview/vscode';
 import { debug } from '../../system/decorators/log';
 import { once } from '../../system/event';
 import { Logger } from '../../system/logger';
 import { maybeUri, normalizePath } from '../../system/path';
 import { fromBase64 } from '../../system/string';
-import { executeCommand } from '../../system/vscode/command';
-import { configuration } from '../../system/vscode/configuration';
-import type { OpenWorkspaceLocation } from '../../system/vscode/utils';
-import { findOrOpenEditor, openWorkspace } from '../../system/vscode/utils';
 import { showInspectView } from '../../webviews/commitDetails/actions';
 import type { ShowWipArgs } from '../../webviews/commitDetails/protocol';
 import type { ShowInCommitGraphCommandArgs } from '../../webviews/plus/graph/protocol';
@@ -73,7 +74,7 @@ export class DeepLinkService implements Disposable {
 		void this.processPendingDeepLink(pendingDeepLink);
 	}
 
-	dispose() {
+	dispose(): void {
 		Disposable.from(...this._disposables).dispose();
 	}
 
@@ -123,7 +124,7 @@ export class DeepLinkService implements Disposable {
 		}
 	}
 
-	async processDeepLinkUri(uri: Uri, useProgress: boolean = true, repo?: Repository) {
+	async processDeepLinkUri(uri: Uri, useProgress: boolean = true, repo?: Repository): Promise<void> {
 		const link = parseDeepLinkUri(uri);
 		if (link == null) return;
 
@@ -191,9 +192,8 @@ export class DeepLinkService implements Disposable {
 		repoPath: string | undefined,
 		remoteUrl: string | undefined,
 		repoId: string | undefined,
-		isPending?: boolean,
 	): Promise<void> {
-		if (repoPath != null && isPending) {
+		if (repoPath != null) {
 			const repoOpenUri = maybeUri(repoPath) ? Uri.parse(repoPath) : repoPath;
 			try {
 				const openRepo = await this.container.git.getOrOpenRepository(repoOpenUri, { detectNested: false });
@@ -232,7 +232,7 @@ export class DeepLinkService implements Disposable {
 			if (repoId != null && repoId !== missingRepositoryId) {
 				// Repo ID can be any valid SHA in the repo, though standard practice is to use the
 				// first commit SHA.
-				if (await this.container.git.validateReference(repo.path, repoId)) {
+				if (await repo.git.refs().validateReference(repoId)) {
 					this._context.repo = repo;
 					return;
 				}
@@ -262,7 +262,6 @@ export class DeepLinkService implements Disposable {
 			this._context.repoPath,
 			this._context.remoteUrl,
 			this._context.mainId,
-			true,
 		);
 
 		const action = this.getServiceActionFromPendingContext();
@@ -316,8 +315,9 @@ export class DeepLinkService implements Disposable {
 	private async getCommit(targetId: string): Promise<GitCommit | undefined> {
 		const { repo } = this._context;
 		if (!repo) return undefined;
-		if (await this.container.git.validateReference(repo.path, targetId)) {
-			return repo.git.getCommit(targetId);
+
+		if (await repo.git.refs().validateReference(targetId)) {
+			return repo.git.commits().getCommit(targetId);
 		}
 
 		return undefined;
@@ -339,7 +339,7 @@ export class DeepLinkService implements Disposable {
 	private async getShaForCommit(targetId: string): Promise<string | undefined> {
 		const { repo } = this._context;
 		if (!repo) return undefined;
-		if (await this.container.git.validateReference(repo.path, targetId)) {
+		if (await repo.git.refs().validateReference(targetId)) {
 			return targetId;
 		}
 
@@ -707,10 +707,9 @@ export class DeepLinkService implements Disposable {
 					}
 
 					if (!this._context.repo && state === DeepLinkServiceState.RepoMatch) {
-						matchingLocalRepoPaths = await this.container.repositoryPathMapping.getLocalRepoPaths({
-							remoteUrl: remoteUrlToSearch,
-						});
-						if (matchingLocalRepoPaths.length > 0) {
+						matchingLocalRepoPaths =
+							(await this.container.repositoryLocator?.getLocation(remoteUrlToSearch)) ?? [];
+						if (matchingLocalRepoPaths.length) {
 							for (const repo of this.container.git.repositories) {
 								if (
 									matchingLocalRepoPaths.some(
@@ -849,10 +848,7 @@ export class DeepLinkService implements Disposable {
 							repoOpenType !== 'workspace' &&
 							!matchingLocalRepoPaths.includes(this._context.repoOpenUri.fsPath)
 						) {
-							await this.container.repositoryPathMapping.writeLocalRepoPath(
-								{ remoteUrl: remoteUrl },
-								chosenRepo.uri.fsPath,
-							);
+							await this.container.repositoryLocator?.storeLocation(chosenRepo.uri.fsPath, remoteUrl);
 						}
 					}
 

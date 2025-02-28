@@ -3,7 +3,7 @@ import { customElement, property } from 'lit/decorators.js';
 import type { SubscriptionState } from '../../../../constants.subscription';
 import type { Source } from '../../../../constants.telemetry';
 import type { FeaturePreview } from '../../../../features';
-import { isSubscriptionStatePaidOrTrial } from '../../../../plus/gk/account/subscription';
+import { isSubscriptionStatePaidOrTrial } from '../../../../plus/gk/utils/subscription.utils';
 import '../../plus/shared/components/feature-gate-plus-state';
 import { linkStyles } from '../../plus/shared/components/vscode.css';
 
@@ -120,18 +120,17 @@ export class GlFeatureGate extends LitElement {
 	@property({ type: String })
 	webroot?: string;
 
-	override render() {
-		if (!this.visible || (this.state != null && isSubscriptionStatePaidOrTrial(this.state))) {
-			this.hidden = true;
-			return undefined;
-		}
+	override render(): unknown {
+		const hidden = !this.visible || (this.state != null && isSubscriptionStatePaidOrTrial(this.state));
+		// eslint-disable-next-line lit/no-this-assign-in-render
+		this.hidden = hidden;
+
+		if (hidden) return undefined;
 
 		const appearance =
 			this.appearance ?? (document.body.getAttribute('data-placement') ?? 'editor') === 'editor'
 				? 'alert'
 				: 'welcome';
-
-		this.hidden = false;
 
 		return html`
 			<section>

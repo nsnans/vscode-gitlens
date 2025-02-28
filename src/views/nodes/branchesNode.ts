@@ -1,9 +1,9 @@
 import { ThemeIcon, TreeItem, TreeItemCollapsibleState } from 'vscode';
 import { GitUri } from '../../git/gitUri';
 import type { GitBranch } from '../../git/models/branch';
-import { getLocalBranchUpstreamNames } from '../../git/models/branch.utils';
 import type { Repository } from '../../git/models/repository';
-import { getOpenedWorktreesByBranch } from '../../git/models/worktree.utils';
+import { getOpenedWorktreesByBranch } from '../../git/utils/-webview/worktree.utils';
+import { getLocalBranchUpstreamNames } from '../../git/utils/branch.utils';
 import { makeHierarchical } from '../../system/array';
 import { debug } from '../../system/decorators/log';
 import { PageableResult } from '../../system/paging';
@@ -91,7 +91,10 @@ export class BranchesNode extends CacheableChildrenViewNode<'branches', ViewsWit
 			}
 
 			if (branchNodes.length === 0) return [new MessageNode(this.view, this, 'No branches could be found.')];
-			if (this.view.config.branches.layout === 'list') return branchNodes;
+			if (this.view.config.branches.layout === 'list') {
+				this.children = branchNodes;
+				return branchNodes;
+			}
 
 			const hierarchy = makeHierarchical(
 				branchNodes,
@@ -128,7 +131,7 @@ export class BranchesNode extends CacheableChildrenViewNode<'branches', ViewsWit
 	}
 
 	@debug()
-	override refresh() {
+	override refresh(): void {
 		super.refresh(true);
 	}
 }

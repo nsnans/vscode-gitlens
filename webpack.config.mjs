@@ -120,6 +120,7 @@ function getExtensionConfig(target, mode, env) {
 		plugins.push(
 			new GenerateContributionsPlugin(),
 			new ExtractContributionsPlugin(),
+			new GenerateCommandTypesPlugin(),
 			new DocsPlugin(),
 			new LicensesPlugin(),
 			new FantasticonPlugin({
@@ -245,7 +246,7 @@ function getExtensionConfig(target, mode, env) {
 								options: {
 									format: 'esm',
 									implementation: esbuild,
-									target: ['es2022', 'chrome114', 'node18.15.0'],
+									target: ['es2023', 'chrome124', 'node20.14.0'],
 									tsconfig: tsConfigPath,
 								},
 						  }
@@ -507,7 +508,7 @@ function getWebviewsConfig(mode, env) {
 								options: {
 									format: 'esm',
 									implementation: esbuild,
-									target: ['es2021', 'chrome114'],
+									target: ['es2023', 'chrome124'],
 									tsconfig: tsConfigPath,
 								},
 						  }
@@ -547,17 +548,8 @@ function getWebviewsConfig(mode, env) {
 		resolve: {
 			alias: {
 				'@env': path.resolve(__dirname, 'src', 'env', 'browser'),
-				'@microsoft/fast-foundation': path.resolve(
-					__dirname,
-					'node_modules/@microsoft/fast-foundation/dist/esm/index.js',
-				),
-				'@microsoft/fast-react-wrapper': path.resolve(
-					__dirname,
-					'node_modules/@microsoft/fast-react-wrapper/dist/esm/index.js',
-				),
 				react: path.resolve(__dirname, 'node_modules', 'react'),
 				'react-dom': path.resolve(__dirname, 'node_modules', 'react-dom'),
-				tslib: path.resolve(__dirname, 'node_modules/tslib/tslib.es6.js'),
 			},
 			extensions: ['.ts', '.tsx', '.js', '.jsx', '.json'],
 			modules: [basePath, 'node_modules'],
@@ -826,6 +818,20 @@ class FileGeneratorPlugin {
 			}
 
 			callback();
+		});
+	}
+}
+
+class GenerateCommandTypesPlugin extends FileGeneratorPlugin {
+	constructor() {
+		super({
+			pluginName: 'commandTypes',
+			pathsToWatch: [path.join(__dirname, 'contributions.json')],
+			command: {
+				name: "'src/constants.commands.generated.ts' command types",
+				command: pkgMgr,
+				args: ['run', 'generate:commandTypes'],
+			},
 		});
 	}
 }

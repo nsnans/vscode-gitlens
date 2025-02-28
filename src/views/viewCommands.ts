@@ -1,5 +1,5 @@
 import type { TextDocumentShowOptions } from 'vscode';
-import { Disposable, env, Uri, window, workspace } from 'vscode';
+import { Disposable, env, ProgressLocation, Uri, window, workspace } from 'vscode';
 import { getTempFile } from '@env/platform';
 import type { CreatePullRequestActionContext, OpenPullRequestActionContext } from '../api/gitlens';
 import type { DiffWithCommandArgs } from '../commands/diffWith';
@@ -9,7 +9,7 @@ import type { OpenFileAtRevisionCommandArgs } from '../commands/openFileAtRevisi
 import type { OpenOnRemoteCommandArgs } from '../commands/openOnRemote';
 import type { ViewShowBranchComparison } from '../config';
 import { GlyphChars } from '../constants';
-import type { Commands } from '../constants.commands';
+import type { GlCommands } from '../constants.commands';
 import { GlCommand } from '../constants.commands';
 import type { Container } from '../container';
 import { browseAtRevision, executeGitCommand } from '../git/actions';
@@ -22,26 +22,23 @@ import * as StashActions from '../git/actions/stash';
 import * as TagActions from '../git/actions/tag';
 import * as WorktreeActions from '../git/actions/worktree';
 import { GitUri } from '../git/gitUri';
-import { matchContributor } from '../git/models/contributor';
+import type { PullRequest } from '../git/models/pullRequest';
+import { RemoteResourceType } from '../git/models/remoteResource';
+import type { Repository } from '../git/models/repository';
+import { deletedOrMissing } from '../git/models/revision';
 import {
 	ensurePullRequestRefs,
-	getComparisonRefsForPullRequest,
 	getOpenedPullRequestRepo,
 	getOrOpenPullRequestRepository,
-	getRepositoryIdentityForPullRequest,
-} from '../git/models/pullRequest';
-import { createReference } from '../git/models/reference.utils';
-import { RemoteResourceType } from '../git/models/remoteResource';
-import { deletedOrMissing } from '../git/models/revision';
-import { shortenRevision } from '../git/models/revision.utils';
+} from '../git/utils/-webview/pullRequest.utils';
+import { matchContributor } from '../git/utils/contributor.utils';
+import { getComparisonRefsForPullRequest, getRepositoryIdentityForPullRequest } from '../git/utils/pullRequest.utils';
+import { createReference } from '../git/utils/reference.utils';
+import { shortenRevision } from '../git/utils/revision.utils';
 import { showPatchesView } from '../plus/drafts/actions';
 import { getPullRequestBranchDeepLink } from '../plus/launchpad/launchpadProvider';
 import type { AssociateIssueWithBranchCommandArgs } from '../plus/startWork/startWork';
 import { showContributorsPicker } from '../quickpicks/contributorsPicker';
-import { filterMap } from '../system/array';
-import { log } from '../system/decorators/log';
-import { partial, sequentialize } from '../system/function';
-import { join, map } from '../system/iterable';
 import {
 	executeActionCommand,
 	executeCommand,
@@ -49,11 +46,16 @@ import {
 	executeCoreGitCommand,
 	executeEditorCommand,
 	registerCommand,
-} from '../system/vscode/command';
-import { configuration } from '../system/vscode/configuration';
-import { setContext } from '../system/vscode/context';
-import type { OpenWorkspaceLocation } from '../system/vscode/utils';
-import { openUrl, openWorkspace, revealInFileExplorer } from '../system/vscode/utils';
+} from '../system/-webview/command';
+import { configuration } from '../system/-webview/configuration';
+import { setContext } from '../system/-webview/context';
+import type { OpenWorkspaceLocation } from '../system/-webview/vscode';
+import { openUrl, openWorkspace, revealInFileExplorer } from '../system/-webview/vscode';
+import { filterMap } from '../system/array';
+import { log } from '../system/decorators/log';
+import { partial, runSequentially } from '../system/function';
+import { join, map } from '../system/iterable';
+import { lazy } from '../system/lazy';
 import { DeepLinkActionType } from '../uris/deepLinks/deepLink';
 import type { LaunchpadItemNode } from './launchpadView';
 import type { RepositoryFolderNode } from './nodes/abstract/repositoryFolderNode';
@@ -85,8 +87,10 @@ import type { PausedOperationStatusNode } from './nodes/pausedOperationStatusNod
 import type { PullRequestNode } from './nodes/pullRequestNode';
 import type { RemoteNode } from './nodes/remoteNode';
 import type { RepositoryNode } from './nodes/repositoryNode';
+import type { ResultsCommitsNode } from './nodes/resultsCommitsNode';
 import type { ResultsFileNode } from './nodes/resultsFileNode';
 import type { ResultsFilesNode } from './nodes/resultsFilesNode';
+import { FilesQueryFilter } from './nodes/resultsFilesNode';
 import type { StashFileNode } from './nodes/stashFileNode';
 import type { StashNode } from './nodes/stashNode';
 import type { StatusFileNode } from './nodes/statusFileNode';
@@ -102,7 +106,7 @@ interface CompareSelectedInfo {
 }
 
 export function registerViewCommand(
-	command: Commands,
+	command: GlCommands,
 	callback: (...args: any[]) => unknown,
 	thisArg?: any,
 	multiselect: boolean | 'sequential' = false,
@@ -123,7 +127,7 @@ export function registerViewCommand(
 						}
 
 						// Execute the command for each node sequentially
-						return sequentialize(
+						return runSequentially(
 							callback,
 							nodes.map<[ViewNode, ...any[]]>(n => [n, ...rest]),
 							thisArg,
@@ -149,7 +153,7 @@ export class ViewCommands implements Disposable {
 			registerViewCommand('gitlens.views.clearComparison', n => this.clearComparison(n), this),
 			registerViewCommand('gitlens.views.clearReviewed', n => this.clearReviewed(n), this),
 			registerViewCommand(GlCommand.ViewsCopy, partial(copyNode, 'text'), this, true),
-			registerViewCommand(GlCommand.ViewsCopyAsMarkdown, partial(copyNode, 'markdown'), this, true),
+			registerViewCommand('gitlens.views.copyAsMarkdown', partial(copyNode, 'markdown'), this, true),
 			registerViewCommand(GlCommand.ViewsCopyUrl, copyNodeUrl, this),
 			registerViewCommand(`${GlCommand.ViewsCopyUrl}.multi`, copyNodeUrl, this, true),
 			registerViewCommand(GlCommand.ViewsOpenUrl, openNodeUrl, this),
@@ -235,6 +239,8 @@ export class ViewCommands implements Disposable {
 			registerViewCommand('gitlens.views.addAuthors', this.addAuthors, this),
 			registerViewCommand('gitlens.views.addAuthor', this.addAuthor, this),
 			registerViewCommand('gitlens.views.addAuthor.multi', this.addAuthor, this, true),
+
+			registerViewCommand('gitlens.views.addPullRequestRemote', this.addPullRequestRemote, this),
 
 			registerViewCommand(
 				'gitlens.views.openBranchOnRemote',
@@ -433,10 +439,28 @@ export class ViewCommands implements Disposable {
 				() => this.setContributorsStatistics(true),
 				this,
 			),
+
+			registerViewCommand(
+				'gitlens.views.setResultsFilesFilterOnLeft',
+				n => this.setResultsFilesFilter(n, FilesQueryFilter.Left),
+				this,
+			),
+			registerViewCommand(
+				'gitlens.views.setResultsFilesFilterOnRight',
+				n => this.setResultsFilesFilter(n, FilesQueryFilter.Right),
+				this,
+			),
+			registerViewCommand(
+				'gitlens.views.setResultsFilesFilterOff',
+				n => this.setResultsFilesFilter(n, undefined),
+				this,
+			),
+
+			registerViewCommand('gitlens.views.generateChangelog', this.generateChangelog, this),
 		);
 	}
 
-	dispose() {
+	dispose(): void {
 		this._disposable.dispose();
 	}
 
@@ -459,6 +483,15 @@ export class ViewCommands implements Disposable {
 	@log()
 	private addRemote(node?: ViewNode) {
 		return RemoteActions.add(getNodeRepoPath(node));
+	}
+
+	@log()
+	private async addPullRequestRemote(node: ViewNode, pr: PullRequest, repo: Repository) {
+		const identity = getRepositoryIdentityForPullRequest(pr);
+		if (identity.remote?.url == null) return;
+
+		await repo.git.remotes().addRemote?.(identity.provider.repoDomain, identity.remote.url, { fetch: true });
+		return node.triggerChange(true);
 	}
 
 	@log()
@@ -760,7 +793,7 @@ export class ViewCommands implements Disposable {
 	private async openPausedOperationInRebaseEditor(node: PausedOperationStatusNode) {
 		if (!node.is('paused-operation-status') || node.pausedOpStatus.type !== 'rebase') return;
 
-		const gitDir = await this.container.git.getGitDir(node.repoPath);
+		const gitDir = await this.container.git.config(node.repoPath).getGitDir?.();
 		if (gitDir == null) return;
 
 		const rebaseTodoUri = Uri.joinPath(gitDir.uri, 'rebase-merge', 'git-rebase-todo');
@@ -799,7 +832,6 @@ export class ViewCommands implements Disposable {
 
 		const refs = getComparisonRefsForPullRequest(repo.path, pr.refs);
 		const counts = await ensurePullRequestRefs(
-			this.container,
 			pr,
 			repo,
 			{ promptMessage: `Unable to open changes for PR #${pr.id} because of a missing remote.` },
@@ -832,7 +864,6 @@ export class ViewCommands implements Disposable {
 
 		const refs = getComparisonRefsForPullRequest(repo.path, pr.refs);
 		const counts = await ensurePullRequestRefs(
-			this.container,
 			pr,
 			repo,
 			{ promptMessage: `Unable to open comparison for PR #${pr.id} because of a missing remote.` },
@@ -899,10 +930,10 @@ export class ViewCommands implements Disposable {
 				if (remoteUrl != null) {
 					const deepLink = getPullRequestBranchDeepLink(
 						this.container,
+						pr,
 						node.branch.getNameWithoutRemote(),
 						remoteUrl,
 						DeepLinkActionType.SwitchToPullRequestWorktree,
-						pr,
 					);
 
 					return this.container.deepLinks.processDeepLinkUri(deepLink, false, node.repo);
@@ -928,10 +959,10 @@ export class ViewCommands implements Disposable {
 
 			const deepLink = getPullRequestBranchDeepLink(
 				this.container,
+				pr,
 				pr.refs.head.branch,
 				repoIdentity.remote.url,
 				DeepLinkActionType.SwitchToPullRequestWorktree,
-				pr,
 			);
 
 			const prRepo = await getOrOpenPullRequestRepository(this.container, pr, {
@@ -1401,19 +1432,18 @@ export class ViewCommands implements Disposable {
 				options = { ...options, title: comparison.title };
 			}
 
-			return (individually ? CommitActions.openAllChangesIndividually : CommitActions.openAllChanges)(
+			return CommitActions.openMultipleChanges(
+				this.container,
 				comparison.files,
 				{ repoPath: comparison.repoPath, lhs: comparison.ref1, rhs: comparison.ref2 },
+				individually,
 				options,
 			);
 		}
 
 		if (!node.isAny('commit', 'stash')) return undefined;
 
-		return (individually ? CommitActions.openAllChangesIndividually : CommitActions.openAllChanges)(
-			node.commit,
-			options,
-		);
+		return CommitActions.openCommitChanges(this.container, node.commit, individually, options);
 	}
 
 	@log()
@@ -1495,18 +1525,18 @@ export class ViewCommands implements Disposable {
 			const comparison = await node.getFilesComparison();
 			if (!comparison?.files.length) return undefined;
 
-			return (
-				individually
-					? CommitActions.openAllChangesWithWorkingIndividually
-					: CommitActions.openAllChangesWithWorking
-			)(comparison.files, { repoPath: comparison.repoPath, ref: comparison.ref1 || comparison.ref2 }, options);
+			return CommitActions.openMultipleChangesWithWorking(
+				this.container,
+				comparison.files,
+				{ repoPath: comparison.repoPath, ref: comparison.ref1 || comparison.ref2 },
+				individually,
+				options,
+			);
 		}
 
 		if (!node.isAny('commit', 'stash')) return undefined;
 
-		return (
-			individually ? CommitActions.openAllChangesWithWorkingIndividually : CommitActions.openAllChangesWithWorking
-		)(node.commit, options);
+		return CommitActions.openCommitChangesWithWorking(this.container, node.commit, individually, options);
 	}
 
 	@log()
@@ -1612,11 +1642,11 @@ export class ViewCommands implements Disposable {
 			const comparison = await node.getFilesComparison();
 			if (!comparison?.files.length) return undefined;
 
-			return CommitActions.openOnlyChangedFiles(comparison.files);
+			return CommitActions.openOnlyChangedFiles(node.view.container, comparison.files);
 		}
 		if (!node.isAny('commit', 'stash')) return undefined;
 
-		return CommitActions.openOnlyChangedFiles(node.commit);
+		return CommitActions.openOnlyChangedFiles(node.view.container, node.commit);
 	}
 
 	@log()
@@ -1685,7 +1715,7 @@ export class ViewCommands implements Disposable {
 		if (filter) {
 			let authors = node.getState('filterCommits');
 			if (authors == null) {
-				const current = await this.container.git.getCurrentUser(repo.uri);
+				const current = await repo.git.config().getCurrentUser();
 				authors = current != null ? [current] : undefined;
 			}
 
@@ -1719,14 +1749,38 @@ export class ViewCommands implements Disposable {
 	}
 
 	@log()
+	private setResultsFilesFilter(node: ResultsFilesNode, filter: FilesQueryFilter | undefined) {
+		if (!node.is('results-files')) return;
+
+		node.filter = filter;
+	}
+
+	@log()
 	private async associateIssueWithBranch(node: BranchNode) {
 		if (!node.is('branch')) return Promise.resolve();
 
-		executeCommand<AssociateIssueWithBranchCommandArgs>(GlCommand.AssociateIssueWithBranch, {
+		executeCommand<AssociateIssueWithBranchCommandArgs>('gitlens.associateIssueWithBranch', {
 			command: 'associateIssueWithBranch',
 			branch: node.ref,
 			source: 'view',
 		});
+	}
+
+	@log()
+	private async generateChangelog(node: ResultsCommitsNode) {
+		if (!node.is('results-commits')) return;
+
+		const changes = lazy(() => node.getChangesForChangelog());
+		const changelog = await this.container.ai.generateChangelog(
+			changes,
+			{ source: 'view' },
+			{ progress: { location: ProgressLocation.Notification } },
+		);
+		if (changelog == null) return;
+
+		// open an untitled editor
+		const document = await workspace.openTextDocument({ language: 'markdown', content: changelog });
+		await window.showTextDocument(document);
 	}
 }
 
